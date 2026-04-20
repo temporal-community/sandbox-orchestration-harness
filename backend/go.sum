@@ -14,6 +14,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.22 h1:dY4kWZiSaXIzxnKlj1
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.22/go.mod h1:KIpEUx0JuRZLO7U6cbV204cWAEco2iC3l061IxlwLtI=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.23 h1:FPXsW9+gMuIeKmz7j6ENWcWtBGTe1kH8r9thNt5Uxx4=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.23/go.mod h1:7J8iGMdRKk6lw2C+cMIphgAnT8uTwBwNOsGkyOCm80U=
+github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.21.1 h1:Yo9Ju0DXQpVge6Y3mO34dFCpUTki6Krjzy/wypJWAds=
+github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.21.1/go.mod h1:UA3W/iRdUajqHyMWwi7ZXh4/Mzy4HC2fRnqxx+m8OwE=
 github.com/aws/aws-sdk-go-v2/service/ecs v1.78.1 h1:9zSVr4X6X8JNTxSMip2RORaBB+Mu0/IfzNu3iRWZE9c=
 github.com/aws/aws-sdk-go-v2/service/ecs v1.78.1/go.mod h1:1DlTqkp+8uc5At3UXyJAvJXFaWoMmxSHcp2Zdor0qGw=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.8 h1:HtOTYcbVcGABLOVuPYaIihj6IlkqubBwFj10K5fxRek=

@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	backend "github.com/temporalio/sandbox-backend"
+	_ "github.com/temporalio/sandbox-backend/compute/agentcore"
 	_ "github.com/temporalio/sandbox-backend/compute/ecs"
 	_ "github.com/temporalio/sandbox-backend/compute/lambda"
 )

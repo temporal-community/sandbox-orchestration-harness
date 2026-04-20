@@ -14,6 +14,7 @@ type (
 )
 
 const (
-	ComputeProviderTypeLambda ComputeProviderType = "aws-lambda"
-	ComputeProviderTypeECS    ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeLambda    ComputeProviderType = "aws-lambda"
+	ComputeProviderTypeECS       ComputeProviderType = "aws-ecs"
+	ComputeProviderTypeAgentCore ComputeProviderType = "aws-agentcore"
 )

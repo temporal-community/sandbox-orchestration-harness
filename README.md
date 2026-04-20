@@ -1,6 +1,6 @@
 # Temporal Sandbox SDK
 
-A framework for running Temporal activities inside ephemeral, isolated compute environments. Workflow developers use the SDK to transparently proxy activity calls into a dynamically-provisioned sandbox (AWS Lambda or ECS Fargate). The sandbox is started on first use and stopped when the workflow is done, with its full lifecycle managed by a dedicated backend workflow.
+A framework for running Temporal activities inside ephemeral, isolated compute environments. Workflow developers use the SDK to transparently proxy activity calls into a dynamically-provisioned sandbox (AWS Lambda, ECS Fargate, or AgentCore Runtime). The sandbox is started on first use and stopped when the workflow is done, with its full lifecycle managed by a dedicated backend workflow.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ The repository is a Go workspace with three modules:
 1. A workflow calls `sandbox.NewSandbox(ctx, computeProvider)` from the SDK.
 2. The SDK starts a **child workflow** (`SandboxWorkflow`) on the backend task queue, using a UUID as the workflow ID.
 3. Once the child workflow is running, the SDK sends a `sandbox-init` update containing the compute provider config.
-4. The backend workflow executes the `StartSandbox` activity, which looks up the registered compute provider and provisions an ephemeral worker (Lambda invocation or ECS task). The worker is told to listen on the task queue `sandbox-<uuid>`.
+4. The backend workflow executes the `StartSandbox` activity, which looks up the registered compute provider and provisions an ephemeral worker (Lambda invocation, ECS task, or AgentCore session). The worker is told to listen on the task queue `sandbox-<uuid>`.
 5. The SDK routes subsequent `ExecuteActivity` calls to `sandbox-<uuid>`, where the ephemeral worker picks them up.
 6. When the workflow calls `sbx.Stop(ctx)`, a `sandbox-stop` signal is sent to `SandboxWorkflow`, which executes the `StopSandbox` activity to tear down the compute instance.
 
@@ -28,24 +28,25 @@ Parent workflow
   │                        │
   │                        ├─ sandbox-init update
   │                        │    └─ StartSandbox activity
-  │                        │         └─ Lambda.Invoke / ECS.RunTask
+  │                        │         └─ Lambda.Invoke / ECS.RunTask / AgentCore.InvokeAgentRuntime
   │                        │              └─ ephemeral worker on sandbox-<uuid>
   │                        │
   ├─ ExecuteActivity() ──► routed to sandbox-<uuid> task queue
   │
   └─ Stop() ──────────► sandbox-stop signal
                               └─ StopSandbox activity
-                                   └─ (no-op / ECS.StopTask)
+                                   └─ (no-op / ECS.StopTask / AgentCore.StopRuntimeSession)
 ```
 
 ## Compute providers
 
-Two providers are included. Both implement the `compute.ComputeProvider` interface in `backend/compute/`:
+Three providers are included. All implement the `compute.ComputeProvider` interface in `backend/compute/`:
 
 | Provider | Type constant | Start | Stop |
 |----------|--------------|-------|------|
 | AWS Lambda | `aws-lambda` | Async `Invoke` with `{"taskQueue": "..."}` payload | No-op |
 | AWS ECS (Fargate) | `aws-ecs` | `RunTask` with `TQ_NAME` env override, waits for RUNNING | `StopTask`, waits for STOPPED |
+| AWS AgentCore Runtime | `aws-agentcore` | `InvokeAgentRuntime` with `{"taskQueue": "..."}` payload | `StopRuntimeSession` |
 
 Providers self-register via `init()` and are blank-imported in the backend worker.
 
@@ -70,6 +71,12 @@ Each provider is configured via the `Config map[string]string` field of `sdk/com
 | `assign-public-ip` | Set to `"true"` to assign a public IP (default: disabled) |
 
 See [`task-definition.json`](task-definition.json) for an example task definition. Register it with `aws ecs register-task-definition --cli-input-json file://task-definition.json`.
+
+**`aws-agentcore`**
+
+| Key | Description |
+|-----|-------------|
+| `agent-runtime-arn` | ARN of the AgentCore Runtime to invoke |
 
 ### Adding a new provider
 
@@ -107,6 +114,7 @@ The sandbox worker runs remotely — deploy it before starting workflows:
 
 - **Lambda**: deploy `consumer/sandbox-worker-lambda.zip` to AWS Lambda, configured via function ARN
 - **ECS**: deploy the container image built with `make sandbox-worker-ecs` as a Fargate task definition
+- **AgentCore**: deploy the container image built with `ko build ./consumer/cmd/sandbox-worker-agentcore` as an AgentCore Runtime
 
 Start the example workflow:
 
@@ -131,6 +139,7 @@ backend/
     registry.go           # Register / Lookup
     lambda/provider.go    # Lambda provider
     ecs/provider.go       # ECS Fargate provider
+    agentcore/provider.go # AgentCore Runtime provider
   cmd/worker/main.go      # Backend worker entry point
 
 consumer/
@@ -141,4 +150,5 @@ consumer/
     starter/main.go             # Workflow starter CLI
     sandbox-worker-lambda/      # Lambda sandbox worker (bootstrap binary)
     sandbox-worker-ecs/         # ECS sandbox worker
+    sandbox-worker-agentcore/   # AgentCore Runtime sandbox worker
 ```

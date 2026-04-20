@@ -64,7 +64,7 @@ func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 }
 
 func (s *sandboxWorkflow) validateInit(inp wfIface.SandboxInitInput) error {
-	if inp.ComputeProvider.Type != compute.ComputeProviderTypeLambda && inp.ComputeProvider.Type != compute.ComputeProviderTypeECS {
+	if inp.ComputeProvider.Type != compute.ComputeProviderTypeLambda && inp.ComputeProvider.Type != compute.ComputeProviderTypeECS && inp.ComputeProvider.Type != compute.ComputeProviderTypeAgentCore {
 		return temporal.NewApplicationError("Unknown compute provider type", "InvalidArgument")
 	}
 
