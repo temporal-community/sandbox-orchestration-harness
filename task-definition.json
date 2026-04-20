@@ -1,0 +1,103 @@
+{
+  "taskDefinitionArn": "arn:aws:ecs:us-west-2:093235337669:task-definition/ephemeral-worker-poc:3",
+  "containerDefinitions": [
+    {
+      "name": "main",
+      "image": "093235337669.dkr.ecr.us-west-2.amazonaws.com/ephemeral-workers/ecs@sha256:3ecffc16e179eca0af3fae984e94d2634eec2174415e22a6c5bb8c45c2d0657a",
+      "cpu": 0,
+      "portMappings": [],
+      "essential": true,
+      "environment": [
+        {
+          "name": "ENABLE_TLS",
+          "value": "yes"
+        },
+        {
+          "name": "TEMPORAL_HOST_PORT",
+          "value": "stefan-ephemeral-workers.a2dd6.tmprl.cloud:7233"
+        },
+        {
+          "name": "API_KEY",
+          "value": "arn:aws:secretsmanager:us-west-2:093235337669:secret:stefan-ephemeral-workers-api-key-kMiljQ"
+        },
+        {
+          "name": "TEMPORAL_NAMESPACE",
+          "value": "stefan-ephemeral-workers.a2dd6"
+        }
+      ],
+      "environmentFiles": [],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "ulimits": [],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ephemeral-worker-poc",
+          "awslogs-create-group": "true",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "ecs"
+        },
+        "secretOptions": []
+      },
+      "systemControls": []
+    }
+  ],
+  "family": "ephemeral-worker-poc",
+  "taskRoleArn": "arn:aws:iam::093235337669:role/ephemeral-worker-ecs",
+  "executionRoleArn": "arn:aws:iam::093235337669:role/ecsTaskExecutionRole",
+  "networkMode": "awsvpc",
+  "revision": 3,
+  "volumes": [],
+  "status": "ACTIVE",
+  "requiresAttributes": [
+    {
+      "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+    },
+    {
+      "name": "ecs.capability.execution-role-awslogs"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.ecr-auth"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.21"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.task-iam-role"
+    },
+    {
+      "name": "ecs.capability.execution-role-ecr-pull"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+    },
+    {
+      "name": "ecs.capability.task-eni"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.29"
+    }
+  ],
+  "placementConstraints": [],
+  "compatibilities": [
+    "EC2",
+    "MANAGED_INSTANCES",
+    "FARGATE"
+  ],
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "1024",
+  "memory": "3072",
+  "registeredAt": "2026-04-20T20:24:57.469Z",
+  "registeredBy": "arn:aws:sts::093235337669:assumed-role/AWSReservedSSO_AWSAdministratorAccess_9e88223e01c02475/stefan.richter@temporal.io",
+  "enableFaultInjection": false,
+  "tags": []
+}

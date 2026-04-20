@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go get:*)",
+      "WebSearch",
+      "Bash(find /Users/stefan/Projects/temporal/coupang -type f \\\\\\( -name \"*.go\" -o -name \"*.mod\" -o -name \"*.sum\" -o -name \"*.md\" \\\\\\) -exec wc -l {} +)",
+      "WebFetch(domain:aws.github.io)"
+    ]
+  }
+}
