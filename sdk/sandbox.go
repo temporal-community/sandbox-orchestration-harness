@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/temporalio/sandbox-sdk-go/compute"
-	wfIface "github.com/temporalio/sandbox-sdk-go/workflow"
+	"github.com/temporalio/ephemeral-workers-poc/sdk/compute"
+	wfIface "github.com/temporalio/ephemeral-workers-poc/sdk/workflow"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
 )

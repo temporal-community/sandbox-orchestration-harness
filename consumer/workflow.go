@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/temporalio/sandbox-sdk-go"
-	"github.com/temporalio/sandbox-sdk-go/compute"
+	"github.com/temporalio/ephemeral-workers-poc/sdk/compute"
+	"github.com/temporalio/ephemeral-workers-poc/sdk"
 	"go.temporal.io/sdk/workflow"
 )
 

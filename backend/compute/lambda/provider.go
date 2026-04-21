@@ -9,8 +9,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/lambda/types"
-	backendcompute "github.com/temporalio/sandbox-backend/compute"
-	sdkcompute "github.com/temporalio/sandbox-sdk-go/compute"
+	backendcompute "github.com/temporalio/ephemeral-workers-poc/backend/compute"
+	sdkcompute "github.com/temporalio/ephemeral-workers-poc/sdk/compute"
 )
 
 func init() {

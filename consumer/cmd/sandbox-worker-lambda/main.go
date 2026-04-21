@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	consumer "github.com/temporalio/sandbox-consumer-example"
-	"github.com/temporalio/sandbox-sdk-go/compute"
+	consumer "github.com/temporalio/ephemeral-workers-poc/consumer"
+	"github.com/temporalio/ephemeral-workers-poc/sdk/compute"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/aws/lambdaworker"

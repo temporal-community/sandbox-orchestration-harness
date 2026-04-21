@@ -1,4 +1,4 @@
-module github.com/temporalio/sandbox-sdk-go
+module github.com/temporalio/ephemeral-workers-poc/sdk
 
 go 1.25.0
 

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	backendcompute "github.com/temporalio/sandbox-backend/compute"
-	"github.com/temporalio/sandbox-sdk-go/compute"
-	wfIface "github.com/temporalio/sandbox-sdk-go/workflow"
+	backendcompute "github.com/temporalio/ephemeral-workers-poc/backend/compute"
+	"github.com/temporalio/ephemeral-workers-poc/sdk/compute"
+	wfIface "github.com/temporalio/ephemeral-workers-poc/sdk/workflow"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )

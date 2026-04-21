@@ -3,7 +3,7 @@ package sandbox
 import (
 	"context"
 
-	wfIface "github.com/temporalio/sandbox-sdk-go/workflow"
+	wfIface "github.com/temporalio/ephemeral-workers-poc/sdk/workflow"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )

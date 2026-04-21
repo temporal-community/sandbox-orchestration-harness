@@ -3,8 +3,8 @@ package backend
 import (
 	"context"
 
-	backendcompute "github.com/temporalio/sandbox-backend/compute"
-	sdkcompute "github.com/temporalio/sandbox-sdk-go/compute"
+	backendcompute "github.com/temporalio/ephemeral-workers-poc/backend/compute"
+	sdkcompute "github.com/temporalio/ephemeral-workers-poc/sdk/compute"
 )
 
 type StartSandboxInput struct {

@@ -1,4 +1,4 @@
-module github.com/temporalio/sandbox-consumer-example
+module github.com/temporalio/ephemeral-workers-poc/consumer
 
 go 1.25.0
 

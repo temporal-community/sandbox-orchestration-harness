@@ -8,8 +8,8 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	consumer "github.com/temporalio/sandbox-consumer-example"
-	sandbox "github.com/temporalio/sandbox-sdk-go"
+	consumer "github.com/temporalio/ephemeral-workers-poc/consumer"
+	sandbox "github.com/temporalio/ephemeral-workers-poc/sdk"
 )
 
 func main() {

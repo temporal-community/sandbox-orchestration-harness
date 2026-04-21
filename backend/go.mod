@@ -1,4 +1,4 @@
-module github.com/temporalio/sandbox-backend
+module github.com/temporalio/ephemeral-workers-poc/backend
 
 go 1.25.0
 

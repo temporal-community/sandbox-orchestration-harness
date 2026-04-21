@@ -9,7 +9,7 @@ import (
 
 	"go.temporal.io/sdk/client"
 
-	consumer "github.com/temporalio/sandbox-consumer-example"
+	consumer "github.com/temporalio/ephemeral-workers-poc/consumer"
 )
 
 func main() {

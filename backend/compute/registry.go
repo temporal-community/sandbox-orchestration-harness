@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	sdkcompute "github.com/temporalio/sandbox-sdk-go/compute"
+	sdkcompute "github.com/temporalio/ephemeral-workers-poc/sdk/compute"
 )
 
 // Constructor is a factory that receives the provider config and returns a ComputeProvider.

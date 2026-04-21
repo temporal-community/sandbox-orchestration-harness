@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"github.com/temporalio/sandbox-sdk-go/compute"
+	"github.com/temporalio/ephemeral-workers-poc/sdk/compute"
 )
 
 const (
