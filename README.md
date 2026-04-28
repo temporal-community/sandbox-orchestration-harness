@@ -1,154 +1,265 @@
-# Temporal Sandbox SDK
+# Temporal Sandbox Orchestration Example
 
-A framework for running Temporal activities inside ephemeral, isolated compute environments. Workflow developers use the SDK to transparently proxy activity calls into a dynamically-provisioned sandbox (AWS Lambda, ECS Fargate, or AgentCore Runtime). The sandbox is started on first use and stopped when the workflow is done, with its full lifecycle managed by a dedicated backend workflow.
+A Go example for running shell commands inside ephemeral, isolated compute environments from Temporal workflows. Workflow developers create a sandbox, run commands in it, and let the SDK handle provisioning, suspend/resume, snapshot/fork, and teardown — all driven by a long-lived child workflow that manages the sandbox lifecycle.
 
 ## Architecture
 
-The repository is a Go workspace with three modules:
+The repository is a Go workspace with one library module and several example modules:
 
 | Module | Role |
 |--------|------|
-| `sdk/` | Public API for workflow developers — `NewSandbox`, `ExecuteActivity`, `Stop` |
-| `backend/` | Sandbox lifecycle management — `SandboxWorkflow`, compute provider registry |
-| `consumer/` | Example application — `FileOpsWorkflow` and all worker binaries |
+| `sdk/` | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
+| `examples/*/` | Runnable example workflows |
 
 ### How it works
 
-1. A workflow calls `sandbox.NewSandbox(ctx, computeProvider)` from the SDK.
-2. The SDK starts a **child workflow** (`SandboxWorkflow`) on the backend task queue, using a UUID as the workflow ID.
-3. Once the child workflow is running, the SDK sends a `sandbox-init` update containing the compute provider config.
-4. The backend workflow executes the `StartSandbox` activity, which looks up the registered compute provider and provisions an ephemeral worker (Lambda invocation, ECS task, or AgentCore session). The worker is told to listen on the task queue `sandbox-<uuid>`.
-5. The SDK routes subsequent `ExecuteActivity` calls to `sandbox-<uuid>`, where the ephemeral worker picks them up.
-6. When the workflow calls `sbx.Stop(ctx)`, a `sandbox-stop` signal is sent to `SandboxWorkflow`, which executes the `StopSandbox` activity to tear down the compute instance.
+1. A workflow calls `sandbox.NewSandbox(ctx, computeProvider)`.
+2. The SDK starts a **child workflow** (`SandboxWorkflow`) using a UUID as the workflow ID.
+3. Once the child is running, the SDK sends a `sandbox-init` update containing the compute provider config and idle timeout.
+4. `SandboxWorkflow` executes `StartSandbox` (or `StartSandboxFromSnapshot` when a snapshot is provided), which provisions an ephemeral compute instance.
+5. Subsequent `ExecuteCommand` calls are delivered to `SandboxWorkflow` as `sandbox-execute-command` updates; the workflow runs the command on the provisioned instance and returns the result.
+6. After each command, an idle timer starts. If no command arrives within the idle timeout, the sandbox is automatically suspended.
+7. When `ExecuteCommand` is called on a suspended sandbox it is transparently resumed first (unless `DisableAutoResume()` is passed).
+8. `Snapshot` captures the sandbox state and returns an opaque `*compute.ProviderSnapshot`; the workflow updates its internal suspended/deleted state accordingly.
+9. When the workflow calls `sbx.Stop(ctx)`, a `sandbox-stop` signal causes `SandboxWorkflow` to run `StopSandbox` and exit.
 
 ```
 Parent workflow
   │
-  ├─ NewSandbox() ──► starts SandboxWorkflow (backend task queue)
-  │                        │
-  │                        ├─ sandbox-init update
-  │                        │    └─ StartSandbox activity
-  │                        │         └─ Lambda.Invoke / ECS.RunTask / AgentCore.InvokeAgentRuntime
-  │                        │              └─ ephemeral worker on sandbox-<uuid>
-  │                        │
-  ├─ ExecuteActivity() ──► routed to sandbox-<uuid> task queue
+  ├─ NewSandbox() ──────────► starts SandboxWorkflow (child)
+  │                                │
+  │                                ├─ sandbox-init update → StartSandbox activity
+  │                                │    └─ provisions ephemeral compute instance
+  │                                │
+  ├─ ExecuteCommand() ──────► sandbox-execute-command update → ExecuteCommand activity
+  │                                │
+  │                                ├─ idle timer starts after each command
+  │                                │    └─ auto-suspends if no command within timeout
+  │                                │
+  ├─ Suspend() ─────────────► sandbox-suspend update → SuspendSandbox activity
+  ├─ Resume() ──────────────► sandbox-resume update → ResumeSandbox activity
+  ├─ Snapshot() ────────────► sandbox-snapshot update → SnapshotSandbox activity
   │
-  └─ Stop() ──────────► sandbox-stop signal
-                              └─ StopSandbox activity
-                                   └─ (no-op / ECS.StopTask / AgentCore.StopRuntimeSession)
+  └─ Stop() ────────────────► sandbox-stop signal → StopSandbox activity
+
+  NewSandbox(ctx, provider, WithSnapshot(snap))
+    └─ sandbox-init update → StartSandboxFromSnapshot activity
+```
+
+## SDK reference
+
+### Creating and stopping a sandbox
+
+```go
+sbx, err := sandbox.NewSandbox(ctx, compute.ProviderDetails{
+    Type:   compute.ProviderTypeE2B,
+    Config: map[string]string{"template-id": "base"},
+})
+
+result, err := sbx.ExecuteCommand(ctx, "echo hello")
+// result.Stdout, result.Stderr, result.ExitCode
+
+err = sbx.Stop(ctx)
+```
+
+### Options
+
+```go
+sandbox.NewSandbox(ctx, provider,
+    sandbox.WithIdleTimeout(10*time.Minute),          // auto-suspend after 10 min idle (default: 5 min)
+    sandbox.WithCleanup(sandbox.CleanupDisabled),     // sandbox survives parent workflow close
+    sandbox.WithSnapshot(snap),                       // start from a previously taken snapshot
+)
+```
+
+### Suspend and resume
+
+```go
+err = sbx.Suspend(ctx)  // explicit suspend
+err = sbx.Resume(ctx)   // explicit resume
+```
+
+By default, `ExecuteCommand` transparently resumes a suspended sandbox before running the command. To receive an error instead:
+
+```go
+result, err := sbx.ExecuteCommand(ctx, "ls", sandbox.DisableAutoResume())
+```
+
+### Snapshot and fork
+
+`Snapshot` captures the sandbox filesystem state and returns a `*compute.ProviderSnapshot`. Pass it to `WithSnapshot` when creating a new sandbox to start from that state:
+
+```go
+snap, err := origin.Snapshot(ctx)
+
+forkA, err := sandbox.NewSandbox(ctx, provider, sandbox.WithSnapshot(snap))
+forkB, err := sandbox.NewSandbox(ctx, provider, sandbox.WithSnapshot(snap))
+```
+
+Each fork is fully independent — writes in one are invisible to the others and to the origin. The `SandboxPostSnapshotState` returned by the provider indicates whether the origin sandbox is still running, was suspended, or was deleted as a side-effect of snapshotting.
+
+### Sandbox references
+
+A sandbox reference is an opaque string that lets a child or sibling workflow route commands to an existing sandbox without taking ownership of its lifecycle:
+
+```go
+ref, err := sbx.Ref()  // in the creator workflow
+
+// in another workflow:
+sbx, err := sandbox.AttachToSandbox(ref)
+result, err := sbx.ExecuteCommand(ctx, "ls")
+```
+
+### Worker registration
+
+Call `sandbox.Register` once when setting up your worker. It registers `SandboxWorkflow` and all supporting activities:
+
+```go
+err := sandbox.Register(w, temporalClient)
 ```
 
 ## Compute providers
 
-Three providers are included. All implement the `compute.ComputeProvider` interface in `backend/compute/`:
+Five providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
-| Provider | Type constant | Start | Stop |
-|----------|--------------|-------|------|
-| AWS Lambda | `aws-lambda` | Async `Invoke` with `{"taskQueue": "..."}` payload | No-op |
-| AWS ECS (Fargate) | `aws-ecs` | `RunTask` with `TQ_NAME` env override, waits for RUNNING | `StopTask`, waits for STOPPED |
-| AWS AgentCore Runtime | `aws-agentcore` | `InvokeAgentRuntime` with `{"taskQueue": "..."}` payload | `StopRuntimeSession` |
+| Provider | Type constant | Blank-import |
+|----------|--------------|--------------|
+| E2B | `compute.ProviderTypeE2B` | `sdk/compute/e2b` |
+| Daytona | `compute.ProviderTypeDaytona` | `sdk/compute/daytona` |
+| AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
+| Modal | `compute.ProviderTypeModal` | `sdk/compute/modal` |
+| GKE Agent Sandbox | `compute.ProviderTypeGKEAgentSandbox` | `sdk/compute/gkeagentsandbox` |
 
-Providers self-register via `init()` and are blank-imported in the backend worker.
+### Feature coverage
+
+| Provider | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
+|----------|:-----:|:----:|:-------:|:------:|:--------------:|:--------:|:-----------------:|
+| E2B | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
+| GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
+
+Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
+
+† GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
 
 ### Provider configuration
 
-Each provider is configured via the `Config map[string]string` field of `sdk/compute.ComputeProvider`.
-
-**`aws-lambda`**
+**E2B** — `compute.ProviderTypeE2B`
 
 | Key | Description |
 |-----|-------------|
-| `function-arn` | ARN of the Lambda function to invoke |
+| `template-id` | E2B sandbox template ID. API key is read from `E2B_API_KEY`. |
+| `timeout` | Sandbox timeout in seconds (default: 3600) |
 
-**`aws-ecs`**
+**Daytona** — `compute.ProviderTypeDaytona`
 
 | Key | Description |
 |-----|-------------|
-| `cluster` | ECS cluster name or ARN |
-| `task-definition` | Task definition name or ARN |
-| `subnet-ids` | Comma-separated list of subnet IDs |
-| `security-group-ids` | Comma-separated list of security group IDs |
-| `assign-public-ip` | Set to `"true"` to assign a public IP (default: disabled) |
+| `image` | Docker image to run (required) |
+| `region` | Daytona target region (optional) |
 
-See [`task-definition.json`](task-definition.json) for an example task definition. Register it with `aws ecs register-task-definition --cli-input-json file://task-definition.json`.
-
-**`aws-agentcore`**
+**AgentCore Runtime** — `compute.ProviderTypeAgentCoreRuntime`
 
 | Key | Description |
 |-----|-------------|
 | `agent-runtime-arn` | ARN of the AgentCore Runtime to invoke |
 
-### Adding a new provider
+**Modal** — `compute.ProviderTypeModal`
 
-1. Create a package under `backend/compute/<name>/`.
-2. Implement `compute.ComputeProvider` (`Start` and `Stop`).
-3. Call `backendcompute.Register(myType, constructor)` in an `init()` function.
-4. Blank-import the package in `backend/cmd/worker/main.go`.
-5. Add the new type constant to `sdk/compute/provider.go`.
+| Key | Description |
+|-----|-------------|
+| `image` | Container image reference (required) |
+| `app-name` | Modal app name (default: `temporal-sandbox-example`) |
 
-## Running the example
+**GKE Agent Sandbox** — `compute.ProviderTypeGKEAgentSandbox`
 
-### Prerequisites
+| Key | Description |
+|-----|-------------|
+| `template` | Agent Sandbox template name (required) |
+| `namespace` | Kubernetes namespace (default: `default`) |
 
-- Go 1.25+
+Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`.
+
+### Adding a provider
+
+1. Create a package under `sdk/compute/<name>/`.
+2. Implement `compute.Provider`. Return `errors.ErrUnsupported` for unimplemented operations.
+3. Call `compute.Register(myType, constructor)` in an `init()` function.
+4. Blank-import the package wherever you register workers.
+
+## Examples
+
+Each example is a self-contained Go module with a `starter` binary and a `worker` binary.
+
+| Example | What it shows |
+|---------|---------------|
+| `examples/file-management` | Sequential shell commands (create, read, list files) |
+| `examples/auto-suspend` | Auto-suspend via `WithIdleTimeout`; file persists across suspend/resume |
+| `examples/explicit-suspend-resume` | Manual `Suspend` and `Resume` calls |
+| `examples/shared-sandbox` | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox` |
+| `examples/detached-sandbox` | `CleanupDisabled` sandbox handed off to an independent workflow |
+| `examples/snapshot-fork` | Snapshot an origin sandbox then branch two independent forks from it |
+
+### Running an example
+
+**Prerequisites**
+
+- Go 1.26+
 - A running Temporal server (`temporal server start-dev`)
-- AWS credentials configured (for Lambda or ECS providers)
-- [`ko`](https://ko.build) (for the ECS container image target)
+- Credentials for the compute provider used by the example
 
-### Build
+**Build**
 
 ```sh
-make bins                  # build workflow-worker, workflow-starter, backend-worker, sandbox-worker-lambda
-make sandbox-worker-ecs    # build ECS container image with ko
+make bins   # builds starter and worker binaries for all examples
 ```
 
-### Run
-
-Start both workers with [Foreman](https://github.com/ddollar/foreman) (or a compatible tool such as [Hivemind](https://github.com/DarthSim/hivemind) or [Overmind](https://github.com/DarthSim/overmind)):
+Or build a single example:
 
 ```sh
-foreman start
+cd examples/file-management && go build -o starter ./cmd/starter && go build -o worker ./cmd/worker
 ```
 
-The sandbox worker runs remotely — deploy it before starting workflows:
+**Run**
 
-- **Lambda**: deploy `consumer/sandbox-worker-lambda.zip` to AWS Lambda, configured via function ARN
-- **ECS**: deploy the container image built with `make sandbox-worker-ecs` as a Fargate task definition
-- **AgentCore**: deploy the container image built with `ko build ./consumer/cmd/sandbox-worker-agentcore` as an AgentCore Runtime
-
-Start the example workflow:
+Start the worker:
 
 ```sh
-./consumer/workflow-starter
+./examples/file-management/worker
+```
+
+Start the workflow:
+
+```sh
+./examples/file-management/starter
 ```
 
 ## Repository layout
 
 ```
 sdk/
-  sandbox.go              # Sandbox interface and NewSandbox factory
-  sandbox_activity.go     # SendSandboxInit helper activity
-  compute/provider.go     # ComputeProvider type and constants
-  workflow/interface.go   # Shared constants and types
-
-backend/
-  workflow.go             # SandboxWorkflow
-  activities.go           # StartSandbox, StopSandbox
+  sandbox.go              # Sandbox interface, NewSandbox, AttachToSandbox, WithSnapshot
+  sandbox_activity.go     # Register(), SendSandbox* activities
   compute/
-    provider.go           # ComputeProvider interface
+    provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
-    lambda/provider.go    # Lambda provider
-    ecs/provider.go       # ECS Fargate provider
-    agentcore/provider.go # AgentCore Runtime provider
-  cmd/worker/main.go      # Backend worker entry point
+    agentcore/provider.go # AWS AgentCore Runtime provider
+    daytona/provider.go   # Daytona provider
+    e2b/provider.go       # E2B provider
+    modal/provider.go     # Modal provider
+    gkeagentsandbox/      # GKE Agent Sandbox provider
+  workflow/
+    interface.go          # Update/signal names, timeout constants, shared types
+    workflow.go           # SandboxWorkflow
+    activities.go         # StartSandbox, StopSandbox, Suspend/Resume/Snapshot/ExecuteCommand
 
-consumer/
-  workflow.go             # FileOpsWorkflow example
-  activities.go           # CreateFile, ReadFile, ListFiles
-  cmd/
-    worker/main.go              # Consumer workflow worker
-    starter/main.go             # Workflow starter CLI
-    sandbox-worker-lambda/      # Lambda sandbox worker (bootstrap binary)
-    sandbox-worker-ecs/         # ECS sandbox worker
-    sandbox-worker-agentcore/   # AgentCore Runtime sandbox worker
+examples/
+  auto-suspend/
+  detached-sandbox/
+  explicit-suspend-resume/
+  file-management/
+  shared-sandbox/
+  snapshot-fork/
 ```

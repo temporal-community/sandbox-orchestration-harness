@@ -1,5 +1,2 @@
-consumer/bootstrap
-consumer/sandbox-worker-lambda.zip
-consumer/workflow-starter
-consumer/workflow-worker
-backend/worker
+examples/*/starter
+examples/*/worker

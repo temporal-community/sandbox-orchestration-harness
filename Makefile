@@ -1,6 +1,6 @@
 ############################# Main targets #############################
 # Rebuild binaries (used by Dockerfile).
-bins: sandbox-worker-lambda workflow-starter workflow-worker backend-worker
+bins: examples-auto-suspend-starter examples-auto-suspend-worker examples-detached-sandbox-starter examples-detached-sandbox-worker examples-explicit-suspend-resume-starter examples-explicit-suspend-resume-worker examples-file-management-starter examples-file-management-worker examples-shared-sandbox-starter examples-shared-sandbox-worker examples-snapshot-fork-starter examples-snapshot-fork-worker
 
 # Install all tools, run all possible checks and tests (long but comprehensive).
 all: clean bins
@@ -17,37 +17,68 @@ COLOR := "\e[1;36m%s\e[0m\n"
 RED :=   "\e[1;31m%s\e[0m\n"
 
 ALL_SRC         := $(shell find . -name "*.go")
-ALL_SRC         += sdk/go.mod consumer/go.mod
+ALL_SRC         += sdk/go.mod examples/auto-suspend/go.mod examples/detached-sandbox/go.mod examples/explicit-suspend-resume/go.mod examples/file-management/go.mod examples/shared-sandbox/go.mod examples/snapshot-fork/go.mod
 
 ##### Binaries #####
 clean-bins:
 	@printf $(COLOR) "Delete old binaries..."
-	@rm -f backend/worker
-	@rm -f consumer/sandbox-worker-lambda.zip
-	@rm -f consumer/workflow-starter
-	@rm -f consumer/workflow-worker
+	@rm -f examples/auto-suspend/starter
+	@rm -f examples/auto-suspend/worker
+	@rm -f examples/detached-sandbox/starter
+	@rm -f examples/detached-sandbox/worker
+	@rm -f examples/explicit-suspend-resume/starter
+	@rm -f examples/explicit-suspend-resume/worker
+	@rm -f examples/file-management/starter
+	@rm -f examples/file-management/worker
+	@rm -f examples/shared-sandbox/starter
+	@rm -f examples/shared-sandbox/worker
+	@rm -f examples/snapshot-fork/starter
+	@rm -f examples/snapshot-fork/worker
 
-sandbox-worker-agentcore: $(ALL_SRC)
-	@printf $(COLOR) "Build sandbox-worker-agentcore container image with ko..."
-	cd consumer && ko build ./cmd/sandbox-worker-agentcore
+examples-auto-suspend-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-auto-suspend-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/auto-suspend && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
 
-sandbox-worker-ecs: $(ALL_SRC)
-	@printf $(COLOR) "Build sandbox-worker-ecs container image with ko..."
-	cd consumer && ko build ./cmd/sandbox-worker-ecs
+examples-auto-suspend-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-auto-suspend-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/auto-suspend && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
 
-sandbox-worker-lambda: $(ALL_SRC)
-	@printf $(COLOR) "Build sandbox-worker-lambda with CGO_ENABLED=$(CGO_ENABLED)..."
-	cd consumer && CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap ./cmd/sandbox-worker-lambda
-	cd consumer && zip sandbox-worker-lambda.zip bootstrap && rm bootstrap
+examples-detached-sandbox-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-detached-sandbox-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/detached-sandbox && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
 
-workflow-starter: $(ALL_SRC)
-	@printf $(COLOR) "Build workflow-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
-	cd consumer && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o workflow-starter ./cmd/starter
+examples-detached-sandbox-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-detached-sandbox-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/detached-sandbox && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
 
-workflow-worker: $(ALL_SRC)
-	@printf $(COLOR) "Build workflow-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
-	cd consumer && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o workflow-worker ./cmd/worker
+examples-explicit-suspend-resume-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-explicit-suspend-resume-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/explicit-suspend-resume && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
 
-backend-worker: $(ALL_SRC)
-	@printf $(COLOR) "Build backend-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
-	cd backend && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
+examples-explicit-suspend-resume-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-explicit-suspend-resume-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/explicit-suspend-resume && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
+
+examples-shared-sandbox-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-shared-sandbox-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/shared-sandbox && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
+
+examples-shared-sandbox-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-shared-sandbox-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/shared-sandbox && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
+
+examples-file-management-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-file-management-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/file-management && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
+
+examples-file-management-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-file-management-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/file-management && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
+
+examples-snapshot-fork-starter: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-snapshot-fork-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/snapshot-fork && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o starter ./cmd/starter
+
+examples-snapshot-fork-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build examples-snapshot-fork-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd examples/snapshot-fork && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker

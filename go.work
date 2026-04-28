@@ -1,7 +1,11 @@
-go 1.25.0
+go 1.26.2
 
 use (
-	./backend
-	./consumer
+	./examples/auto-suspend
+	./examples/detached-sandbox
+	./examples/explicit-suspend-resume
+	./examples/file-management
+	./examples/shared-sandbox
+	./examples/snapshot-fork
 	./sdk
 )
