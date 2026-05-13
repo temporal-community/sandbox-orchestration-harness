@@ -3,6 +3,8 @@ module github.com/temporal-community/sandbox-orchestration-harness/sdk
 go 1.26.2
 
 require (
+	buf.build/gen/go/coreweave/sandbox/connectrpc/go v1.19.2-20260512212232-85d498ba7dfd.1
+	buf.build/gen/go/coreweave/sandbox/protocolbuffers/go v1.36.11-20260512212232-85d498ba7dfd.1
 	connectrpc.com/connect v1.19.2
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
