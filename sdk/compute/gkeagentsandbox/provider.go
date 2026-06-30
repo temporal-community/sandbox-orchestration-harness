@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -33,12 +33,12 @@ var (
 	}
 	podSnapshotGVR = schema.GroupVersionResource{
 		Group:    "podsnapshot.gke.io",
-		Version:  "v1alpha1",
+		Version:  "v1",
 		Resource: "podsnapshots",
 	}
 	podSnapshotTriggerGVR = schema.GroupVersionResource{
 		Group:    "podsnapshot.gke.io",
-		Version:  "v1alpha1",
+		Version:  "v1",
 		Resource: "podsnapshotmanualtriggers",
 	}
 )
@@ -133,13 +133,13 @@ func (p *gkeAgentSandboxProvider) Snapshot(ctx context.Context, status *compute.
 	sandboxName := sb.SandboxName()
 
 	triggerName := "snap-trigger-" + status.InstanceID
-	trigger := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "podsnapshot.gke.io/v1alpha1",
+	trigger := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "podsnapshot.gke.io/v1",
 		"kind":       "PodSnapshotManualTrigger",
-		"metadata":   map[string]interface{}{"name": triggerName, "namespace": p.namespace},
-		"spec":       map[string]interface{}{"targetPod": podName},
+		"metadata":   map[string]any{"name": triggerName, "namespace": p.namespace},
+		"spec":       map[string]any{"targetPod": podName},
 	}}
-	if _, err := p.dynamicClient.Resource(podSnapshotTriggerGVR).Namespace(p.namespace).Create(ctx, trigger, metav1.CreateOptions{}); err != nil {
+	if _, err = p.dynamicClient.Resource(podSnapshotTriggerGVR).Namespace(p.namespace).Create(ctx, trigger, metav1.CreateOptions{}); err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, fmt.Errorf("gke-agent-sandbox: create snapshot trigger: %w", err)
 	}
 
@@ -150,14 +150,8 @@ func (p *gkeAgentSandboxProvider) Snapshot(ctx context.Context, status *compute.
 		return compute.SandboxPostSnapshotRunning, nil, err
 	}
 
-	// Suspend: scale to 0 without deleting the claim so StartFromSnapshot can resume it.
-	patch := []byte(`{"spec":{"replicas":0}}`)
-	if _, err := p.dynamicClient.Resource(sandboxGVR).Namespace(p.namespace).Patch(ctx, sandboxName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
-		return compute.SandboxPostSnapshotRunning, nil, fmt.Errorf("gke-agent-sandbox: scale sandbox to 0: %w", err)
-	}
-
 	snapshotID := status.InstanceID + ";" + sandboxName + ";" + snapshotName
-	return compute.SandboxPostSnapshotSuspended, &compute.ProviderSnapshot{SnapshotID: snapshotID}, nil
+	return compute.SandboxPostSnapshotRunning, &compute.ProviderSnapshot{SnapshotID: snapshotID}, nil
 }
 
 // waitForSnapshotTrigger polls the PodSnapshotManualTrigger status until the GKE controller
@@ -177,7 +171,7 @@ func (p *gkeAgentSandboxProvider) waitForSnapshotTrigger(ctx context.Context, tr
 
 		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 		for _, c := range conditions {
-			cond, _ := c.(map[string]interface{})
+			cond, _ := c.(map[string]any)
 			if cond["type"] != "Triggered" {
 				continue
 			}
@@ -211,30 +205,12 @@ func (p *gkeAgentSandboxProvider) StartFromSnapshot(ctx context.Context, _ strin
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("gke-agent-sandbox: malformed snapshot ID %q", snapshot.SnapshotID)
 	}
-	claimName, sandboxName := parts[0], parts[1]
 
-	patch := []byte(`{"spec":{"replicas":1}}`)
-	if _, err := p.dynamicClient.Resource(sandboxGVR).Namespace(p.namespace).Patch(ctx, sandboxName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
-		return nil, fmt.Errorf("gke-agent-sandbox: scale sandbox to 1: %w", err)
+	sb, err := p.client.CreateSandbox(ctx, p.template, p.namespace)
+	if err != nil {
+		return nil, fmt.Errorf("gke-agent-sandbox: create sandbox: %w", err)
 	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		obj, err := p.dynamicClient.Resource(sandboxGVR).Namespace(p.namespace).Get(ctx, sandboxName, metav1.GetOptions{})
-		if err == nil {
-			replicas, _, _ := unstructured.NestedInt64(obj.Object, "status", "replicas")
-			if replicas > 0 {
-				break
-			}
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	return &compute.ProviderStatus{InstanceID: claimName}, nil
+	return &compute.ProviderStatus{InstanceID: sb.ClaimName()}, nil
 }
 
 // DeleteSnapshot deletes the GKE PodSnapshot resource identified by the snapshotName in
