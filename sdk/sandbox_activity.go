@@ -65,7 +65,7 @@ func (a *sandboxActivities) SendSandboxExecuteCommand(ctx context.Context, input
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxExecuteCommandUpdate,
-		Args:         []interface{}{wfIface.SandboxExecuteCommandInput{Command: input.Command, DisableAutoResume: input.DisableAutoResume}},
+		Args:         []any{wfIface.SandboxExecuteCommandInput{Command: input.Command, DisableAutoResume: input.DisableAutoResume}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func (a *sandboxActivities) SendSandboxSuspend(ctx context.Context, input SendSa
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxSuspendUpdate,
-		Args:         []interface{}{struct{}{}},
+		Args:         []any{struct{}{}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -110,7 +110,7 @@ func (a *sandboxActivities) SendSandboxResume(ctx context.Context, input SendSan
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxResumeUpdate,
-		Args:         []interface{}{struct{}{}},
+		Args:         []any{struct{}{}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -135,7 +135,7 @@ func (a *sandboxActivities) SendSandboxInit(ctx context.Context, input SendSandb
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxInitUpdate,
-		Args:         []interface{}{wfIface.SandboxInitInput{ComputeProvider: input.ComputeProvider, IdleTimeout: input.IdleTimeout, Snapshot: input.Snapshot}},
+		Args:         []any{wfIface.SandboxInitInput{ComputeProvider: input.ComputeProvider, IdleTimeout: input.IdleTimeout, Snapshot: input.Snapshot}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func (a *sandboxActivities) SendSandboxSnapshot(ctx context.Context, input SendS
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxSnapshotUpdate,
-		Args:         []interface{}{struct{}{}},
+		Args:         []any{struct{}{}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -181,7 +181,7 @@ func (a *sandboxActivities) SendSandboxDeleteSnapshot(ctx context.Context, input
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxDeleteSnapshotUpdate,
-		Args:         []interface{}{input.Snapshot},
+		Args:         []any{input.Snapshot},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -220,7 +220,7 @@ func wrapUpdateError(err error) error {
 // it is stable across replays. Use it to produce a deterministic UpdateID for
 // each UpdateWorkflow activity call so retries are idempotent.
 func sideEffectUUID(ctx workflow.Context) (string, error) {
-	se := workflow.SideEffect(ctx, func(workflow.Context) interface{} { return uuid.New().String() })
+	se := workflow.SideEffect(ctx, func(workflow.Context) any { return uuid.New().String() })
 	var id string
 	if err := se.Get(&id); err != nil {
 		return "", fmt.Errorf("sandbox: get side-effect update ID: %w", err)
