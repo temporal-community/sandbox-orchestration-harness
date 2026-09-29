@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -9,17 +10,14 @@ import (
 	"go.temporal.io/sdk/client"
 
 	example "github.com/temporal-community/sandbox-orchestration-harness/examples/database-fork"
+	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
 func main() {
-	cfg := example.Config{
-		Template:   getEnv("CRAFTING_TEMPLATE", ""),
-		Workspace:  getEnv("CRAFTING_WORKSPACE", "dev"),
-		Dependency: getEnv("CRAFTING_DEPENDENCY", "db"),
-		Folder:     os.Getenv("CRAFTING_FOLDER"),
-	}
-	if cfg.Template == "" {
-		log.Fatal("set CRAFTING_TEMPLATE to the Crafting template to run against")
+	provider, err := providerFromEnv()
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	c, err := client.Dial(client.Options{
@@ -34,7 +32,7 @@ func main() {
 	run, err := c.ExecuteWorkflow(context.Background(),
 		client.StartWorkflowOptions{TaskQueue: example.TaskQueue},
 		example.DatabaseForkWorkflow,
-		cfg,
+		provider,
 	)
 	if err != nil {
 		log.Fatalf("unable to start workflow: %v", err)
@@ -56,6 +54,23 @@ func main() {
 	fmt.Printf("  origin (expects shared):            %s\n", result.OriginFiles)
 	fmt.Printf("  fork-a (expects fork-a,shared):     %s\n", result.ForkAFiles)
 	fmt.Printf("  fork-b (expects fork-b,shared):     %s\n", result.ForkBFiles)
+}
+
+// providerFromEnv reads the compute provider from SANDBOX_PROVIDER and its
+// configuration from SANDBOX_PROVIDER_CONFIG, a JSON object of string values,
+// so the example runs against any provider without being rebuilt.
+func providerFromEnv() (sandbox.Provider, error) {
+	typ := os.Getenv("SANDBOX_PROVIDER")
+	if typ == "" {
+		return sandbox.Provider{}, fmt.Errorf("set SANDBOX_PROVIDER to the compute provider to run against")
+	}
+	cfg := map[string]string{}
+	if raw := os.Getenv("SANDBOX_PROVIDER_CONFIG"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return sandbox.Provider{}, fmt.Errorf("SANDBOX_PROVIDER_CONFIG must be a JSON object of strings: %w", err)
+		}
+	}
+	return sandbox.Provider{Type: compute.ProviderType(typ), Config: cfg}, nil
 }
 
 func getEnv(key, fallback string) string {

@@ -174,6 +174,13 @@ The provider is a thin adapter over [`crafting-demo/lightweight-go-client`](http
 cs template create agent-sandbox sdk/compute/crafting/agent-sandbox.yaml
 ```
 
+To run the `database-fork` example against it:
+
+```sh
+export SANDBOX_PROVIDER=crafting
+export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","dependencies":"db"}'
+```
+
 **E2B** — `compute.ProviderTypeE2B`
 
 | Key | Description |
@@ -229,7 +236,7 @@ Each example is a self-contained Go module with a `starter` binary and a `worker
 | `examples/shared-sandbox` | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox` |
 | `examples/detached-sandbox` | `CleanupDisabled` sandbox handed off to an independent workflow |
 | `examples/snapshot-fork` | Snapshot an origin sandbox then branch two independent forks from it |
-| `examples/database-fork` | Forking a sandbox's database along with its files, so each fork applies a different migration |
+| `examples/database-fork` | Snapshot a sandbox that holds database state as well as files, then apply a different migration in each fork |
 
 ### Running an example
 
@@ -265,13 +272,11 @@ Start the workflow:
 ./examples/file-management/starter
 ```
 
-The `database-fork` example runs against Crafting and reads its target from the environment, so it can point at any template without being rebuilt:
+The `database-fork` example is provider-agnostic and reads its provider from the environment. The sandbox needs a `psql` client and the standard libpq variables (`PGHOST`, `PGUSER`, ...) pointing at a Postgres database. Forks only get isolated rows when the provider's snapshots include that database.
 
 ```sh
-export CRAFTING_TEMPLATE=agent-sandbox   # required
-export CRAFTING_WORKSPACE=dev            # workspace workload, default: dev
-export CRAFTING_DEPENDENCY=db            # dependency workload, default: db
-export CRAFTING_FOLDER=lab               # optional placement
+export SANDBOX_PROVIDER=<provider type>                     # required, e.g. the value of a compute.ProviderType* constant
+export SANDBOX_PROVIDER_CONFIG='{"key":"value"}'            # provider configuration as a JSON object of strings
 ```
 
 ## Repository layout

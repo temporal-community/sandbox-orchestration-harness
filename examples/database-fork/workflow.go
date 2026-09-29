@@ -1,11 +1,17 @@
-// Package snapshotfork shows why forking a Crafting sandbox is different from
-// forking a container.
+// Package databasefork shows what it means for a snapshot to capture more than
+// a filesystem.
 //
-// The workflow builds one environment, applies a schema change to its database,
-// then branches into two independent sandboxes from the same checkpoint. Each
-// fork gets its own copy of the workspace and its own copy of the database, so
-// two candidate migrations can run at the same time without either one seeing
-// the other's rows.
+// Agents rarely keep all of their state in files. The workflow builds up state
+// in two places, a file in the home directory and rows in a Postgres database,
+// snapshots the sandbox, then branches two forks from that snapshot and applies
+// a different change to each. The result reports what every sandbox sees, which
+// shows whether the provider's snapshots carry database state along with files:
+// when they do, the forks can explore divergent migrations concurrently without
+// either one seeing the other's rows.
+//
+// The workflow is provider-agnostic. It only assumes the sandbox has a psql
+// client and the standard libpq environment (PGHOST, PGUSER, and so on) pointing
+// at the database it should use.
 package databasefork
 
 import (
@@ -13,24 +19,15 @@ import (
 	"time"
 
 	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
-	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/workflow"
 )
 
 const TaskQueue = "database-fork-queue"
 
-// Config names the Crafting objects the workflow runs against, so the example
-// can point at any template without being rebuilt.
-type Config struct {
-	Template   string
-	Workspace  string
-	Dependency string
-	Folder     string
-}
-
 type WorkflowResult struct {
-	// Each field holds that sandbox's view of the shared table.
-	// The origin never sees either fork's row, and neither fork sees the other's.
+	// Each field holds that sandbox's view of the shared table. With snapshots
+	// that include the database, the origin never sees either fork's row, and
+	// neither fork sees the other's.
 	OriginRows string
 	ForkARows  string
 	ForkBRows  string
@@ -40,34 +37,21 @@ type WorkflowResult struct {
 	ForkBFiles  string
 }
 
-// DatabaseForkWorkflow provisions an environment, checkpoints it, and explores
-// two divergent changes from that checkpoint concurrently.
-func DatabaseForkWorkflow(ctx workflow.Context, cfg Config) (WorkflowResult, error) {
+// DatabaseForkWorkflow provisions a sandbox from the given provider, snapshots
+// it, and explores two divergent changes from that snapshot concurrently.
+func DatabaseForkWorkflow(ctx workflow.Context, provider sandbox.Provider) (WorkflowResult, error) {
 	logger := workflow.GetLogger(ctx)
 
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 15 * time.Minute,
 	})
 
-	provider := sandbox.Provider{
-		Type: compute.ProviderTypeCrafting,
-		Config: map[string]string{
-			"template":  cfg.Template,
-			"workspace": cfg.Workspace,
-			// Naming the dependency here is what makes the database part of the
-			// snapshot. Without it, a fork would inherit the files but share
-			// nothing of the data the agent had built up.
-			"dependencies": cfg.Dependency,
-			"folder":       cfg.Folder,
-		},
-	}
-
 	origin, err := sandbox.NewSandbox(ctx, provider)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("create origin sandbox: %w", err)
 	}
 
-	// Build up state the way an agent would: a file in the workspace and a
+	// Build up state the way an agent would: a file in the home directory and a
 	// schema plus a row in the database.
 	if _, err := origin.ExecuteCommand(ctx, `echo 'shared content' > "$HOME/shared.txt"`); err != nil {
 		return WorkflowResult{}, fmt.Errorf("write shared file: %w", err)
@@ -76,7 +60,7 @@ func DatabaseForkWorkflow(ctx workflow.Context, cfg Config) (WorkflowResult, err
 		return WorkflowResult{}, fmt.Errorf("seed schema: %w", err)
 	}
 
-	// Checkpoint. The origin keeps running, so it stays available for comparison.
+	// The origin keeps running, so it stays available for comparison.
 	snap, err := origin.Snapshot(ctx)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("snapshot origin: %w", err)
@@ -98,7 +82,7 @@ func DatabaseForkWorkflow(ctx workflow.Context, cfg Config) (WorkflowResult, err
 		return WorkflowResult{}, fmt.Errorf("create fork-b: %w", err)
 	}
 
-	// Two different changes, each against its own database.
+	// Two different changes, one per fork.
 	if _, err := forkA.ExecuteCommand(ctx, insertRow("fork-a")); err != nil {
 		return WorkflowResult{}, fmt.Errorf("apply fork-a change: %w", err)
 	}
@@ -149,14 +133,14 @@ func DatabaseForkWorkflow(ctx workflow.Context, cfg Config) (WorkflowResult, err
 
 const seedSchema = `
 set -e
-psql -h "$DB_SERVICE_HOST" -U postgres -q -c "CREATE TABLE IF NOT EXISTS migrations(id serial primary key, applied_by text);"
-psql -h "$DB_SERVICE_HOST" -U postgres -q -c "INSERT INTO migrations(applied_by) VALUES ('origin');"
+psql -q -c "CREATE TABLE IF NOT EXISTS migrations(id serial primary key, applied_by text);"
+psql -q -c "INSERT INTO migrations(applied_by) VALUES ('origin');"
 `
 
-const readRows = `psql -h "$DB_SERVICE_HOST" -U postgres -At -c "SELECT applied_by FROM migrations ORDER BY id;" | paste -sd, -`
+const readRows = `psql -At -c "SELECT applied_by FROM migrations ORDER BY id;" | paste -sd, -`
 
 const listFiles = `ls "$HOME"/*.txt 2>/dev/null | xargs -r -n1 basename | sort | paste -sd, -`
 
 func insertRow(who string) string {
-	return fmt.Sprintf(`psql -h "$DB_SERVICE_HOST" -U postgres -q -c "INSERT INTO migrations(applied_by) VALUES ('%s');"`, who)
+	return fmt.Sprintf(`psql -q -c "INSERT INTO migrations(applied_by) VALUES ('%s');"`, who)
 }

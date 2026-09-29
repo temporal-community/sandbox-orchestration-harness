@@ -17,8 +17,12 @@
 # a database that matches the workspace it came with.
 workspaces:
   - name: dev
-    # The default workspace image already provides a psql client, which is what
-    # the database-fork example uses to reach the dependency below.
+    # The default workspace image already provides a psql client. These point it
+    # at the dependency below using the standard libpq variables, which is all
+    # the database-fork example relies on.
+    env:
+      - PGHOST=db
+      - PGUSER=postgres
 
     # Uncomment to give the agent a repository to work in. Checkouts land under
     # the home directory, so they are captured by home snapshots.
