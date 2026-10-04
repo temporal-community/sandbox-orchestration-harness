@@ -8,13 +8,13 @@ The repository is a Go workspace with one library module and several example mod
 
 | Module | Role |
 |--------|------|
-| `sdk/` | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
+| `sdk/` | Public API — `NewSandbox`, `AttachToSandbox`, and the sandbox methods (`ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `DeleteSnapshot`, `Stop`, `RequestStop`, `Ref`) |
 | `examples/*/` | Runnable example workflows |
 
 ### How it works
 
 1. A workflow calls `sandbox.NewSandbox(ctx, computeProvider)`.
-2. The SDK starts a **child workflow** (`SandboxWorkflow`) using a UUID as the workflow ID.
+2. The SDK starts a **child workflow** (`SandboxWorkflow`) using a UUID as the workflow ID. By default the child runs on the parent's task queue; with `WithTaskQueue` it runs on a separate queue served by a dedicated sandbox worker (see [Dedicated sandbox worker](#dedicated-sandbox-worker)).
 3. Once the child is running, the SDK sends a `sandbox-init` update containing the compute provider config and idle timeout.
 4. `SandboxWorkflow` executes `StartSandbox` (or `StartSandboxFromSnapshot` when a snapshot is provided), which provisions an ephemeral compute instance.
 5. Subsequent `ExecuteCommand` calls are delivered to `SandboxWorkflow` as `sandbox-execute-command` updates; the workflow runs the command on the provisioned instance and returns the result.
@@ -51,7 +51,7 @@ Parent workflow
 ### Creating and stopping a sandbox
 
 ```go
-sbx, err := sandbox.NewSandbox(ctx, compute.ProviderDetails{
+sbx, err := sandbox.NewSandbox(ctx, sandbox.Provider{
     Type:   compute.ProviderTypeE2B,
     Config: map[string]string{"template-id": "base"},
 })
@@ -62,6 +62,17 @@ result, err := sbx.ExecuteCommand(ctx, "echo hello")
 err = sbx.Stop(ctx)
 ```
 
+`NewSandbox` blocks until the sandbox is provisioned and returns an `OwnedSandbox`. `sandbox.Provider`, `sandbox.CommandResult` and `sandbox.ProviderSnapshot` are aliases for the corresponding `compute` types.
+
+There are two ways to shut a sandbox down:
+
+| Method | Available on | Behavior |
+|--------|--------------|----------|
+| `Stop(ctx)` | `OwnedSandbox` (from `NewSandbox`) | Signals the sandbox to stop and blocks until its workflow has finished tearing down the compute instance. Calling it again is a no-op. |
+| `RequestStop(ctx)` | `Sandbox` and `OwnedSandbox` | Signals the sandbox to stop and returns immediately. Use it from workflows that attached via a reference. |
+
+Both treat an already-gone sandbox as success. With the default cleanup behavior you can also skip stopping: the sandbox is cancelled and torn down when the creating workflow closes.
+
 ### Options
 
 ```go
@@ -69,8 +80,36 @@ sandbox.NewSandbox(ctx, provider,
     sandbox.WithIdleTimeout(10*time.Minute),          // auto-suspend after 10 min idle (default: 5 min)
     sandbox.WithCleanup(sandbox.CleanupDisabled),     // sandbox survives parent workflow close
     sandbox.WithSnapshot(snap),                       // start from a previously taken snapshot
+    sandbox.WithTaskQueue(sandbox.DefaultSandboxTaskQueue), // run the sandbox on a dedicated sandbox worker
 )
 ```
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `WithIdleTimeout(d)` | 5 minutes | `0` means the default, not "disabled". Pass `sandbox.NoIdleTimeout` to never auto-suspend. Other negative values make `NewSandbox` return an error. |
+| `WithCleanup(b)` | `CleanupWithWorkflow` | `CleanupWithWorkflow` cancels the sandbox when the creating workflow closes. `CleanupDisabled` leaves it running; something must eventually call `Stop` or `RequestStop`. |
+| `WithSnapshot(snap)` | fresh start | Start from a snapshot returned by `Snapshot`. |
+| `WithTaskQueue(name)` | parent's task queue | See [Dedicated sandbox worker](#dedicated-sandbox-worker). `DefaultSandboxTaskQueue` is `"temporal-sandbox"`. |
+
+### Running commands
+
+```go
+result, err := sbx.ExecuteCommand(ctx, "ls -la /tmp")
+if err != nil {
+    return err // the command could not be run
+}
+if result.ExitCode != 0 {
+    // the command ran and failed; see result.Stderr
+}
+```
+
+`ExecuteCommand(ctx, cmd, opts...)` runs `cmd` in the sandbox, blocks until it finishes, and returns a `*CommandResult` with `Stdout`, `Stderr` and `ExitCode`.
+
+- **A non-zero exit code is not an error.** `err` is reserved for failures to run the command at all (sandbox gone, provider error, invalid state). Check `ExitCode` yourself.
+- **The command is a shell string**, but the shell depends on the provider: Modal runs `sh -c`, E2B runs `bash -c`, and Daytona, AgentCore and GKE pass the string to their own command APIs. Stick to POSIX `sh` syntax for portability.
+- **Each call is independent.** Files persist between calls, but shell state (working directory, environment variables) does not; use `cd /dir && ...` within one command.
+- **Each call resets the idle timer** (see `WithIdleTimeout`). If the sandbox is suspended, it is resumed first unless you pass `DisableAutoResume()` (see below).
+- **Commands may run more than once.** The provider call runs in an activity with a 10-minute start-to-close timeout and Temporal's default retry policy, so a transient failure or a command running past 10 minutes is retried. Prefer idempotent commands, and keep each one under 10 minutes.
 
 ### Suspend and resume
 
@@ -98,6 +137,16 @@ forkB, err := sandbox.NewSandbox(ctx, provider, sandbox.WithSnapshot(snap))
 
 Each fork is fully independent — writes in one are invisible to the others and to the origin. The `SandboxPostSnapshotState` returned by the provider indicates whether the origin sandbox is still running, was suspended, or was deleted as a side-effect of snapshotting.
 
+`Snapshot` is only valid while the sandbox is running; it returns an error if the sandbox is pending, suspended, failed or deleted.
+
+Snapshots you take belong to you: the SDK never deletes them, even when the sandbox stops. Delete one through any live sandbox of the same provider once you no longer need it:
+
+```go
+err = sbx.DeleteSnapshot(ctx, snap)
+```
+
+Deleting the snapshot a sandbox is currently suspended on fails with a `SnapshotInUse` error.
+
 ### Sandbox references
 
 A sandbox reference is an opaque string that lets a child or sibling workflow route commands to an existing sandbox without taking ownership of its lifecycle:
@@ -110,13 +159,39 @@ sbx, err := sandbox.AttachToSandbox(ref)
 result, err := sbx.ExecuteCommand(ctx, "ls")
 ```
 
+`AttachToSandbox` returns a `Sandbox`, which has every method except the blocking `Stop`; use `RequestStop` to shut the sandbox down from an attached workflow.
+
+### Errors
+
+Sandbox operations fail with Temporal `ApplicationError`s whose type identifies the cause, for example `SandboxNotFound`, `Suspended` (command sent with `DisableAutoResume` to a suspended sandbox), `AlreadySuspended`, `InvalidSandboxState` or `SnapshotInUse`. Check the type with `errors.As` and `(*temporal.ApplicationError).Type()`. The full list is in [docs/design/wire-contract.md](docs/design/wire-contract.md#errors).
+
 ### Worker registration
 
 Call `sandbox.Register` once when setting up your worker. It registers `SandboxWorkflow` and all supporting activities:
 
 ```go
-err := sandbox.Register(w, temporalClient)
+sandbox.Register(w, temporalClient)
 ```
+
+`Register` is the combination of two narrower functions, for workers that need only one half:
+
+| Function | Registers | Needs provider credentials |
+|----------|-----------|:--------------------------:|
+| `RegisterSandboxWorkflow(w)` | `SandboxWorkflow` and the lifecycle activities that call compute providers | yes |
+| `RegisterClientActivities(w, c)` | `SendSandbox*` activities that forward requests to `SandboxWorkflow` as updates | no |
+
+### Dedicated sandbox worker
+
+By default the sandbox runs on the task queue of the workflow that created it, so that workflow's worker must call `Register` and hold the compute-provider credentials. With `WithTaskQueue`, the sandbox child workflow and the `SendSandbox*` activities run on a separate queue instead, served by the standalone sandbox worker:
+
+```sh
+make sdk-sandbox-worker
+SANDBOX_TASK_QUEUE=temporal-sandbox ./sdk/sandbox-worker   # SANDBOX_TASK_QUEUE is optional; this is the default
+```
+
+It connects using the same `TEMPORAL_HOST_PORT`, `TEMPORAL_NAMESPACE` and `TEMPORAL_API_KEY` variables as the examples. Workers for workflows that use `WithTaskQueue` then register only their own workflows. Sandbox references created this way carry the task queue, so `AttachToSandbox` routes to it automatically.
+
+The dedicated worker is also how workflows written in other languages use sandboxes. The payloads they exchange with it are specified in [docs/design/wire-contract.md](docs/design/wire-contract.md).
 
 ## Compute providers
 
@@ -143,6 +218,30 @@ Five providers are included. All implement `compute.Provider` and self-register 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
+
+### Credentials
+
+No credentials are stored in this repository. Each process reads what it needs from its environment or from the vendor's standard config files.
+
+**Temporal** — every worker and starter, and `sdk/sandbox-worker`:
+
+| Variable | Description |
+|----------|-------------|
+| `TEMPORAL_HOST_PORT` | Server address (default: `localhost:7233`) |
+| `TEMPORAL_NAMESPACE` | Namespace (default: `default`) |
+| `TEMPORAL_API_KEY` | If set, connect with this API key over TLS (Temporal Cloud) |
+
+**Compute providers** — only the worker that registers `SandboxWorkflow` (via `Register` or `RegisterSandboxWorkflow`) needs these, because providers are constructed inside the sandbox lifecycle activities. With a [dedicated sandbox worker](#dedicated-sandbox-worker), that is only `sdk/sandbox-worker`.
+
+| Provider | Credentials |
+|----------|-------------|
+| Modal | `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, or the active profile in `~/.modal.toml` (written by `modal setup`) |
+| E2B | `E2B_API_KEY` (required) |
+| Daytona | `DAYTONA_API_KEY`, or `DAYTONA_JWT_TOKEN` with `DAYTONA_ORGANIZATION_ID`; optionally `DAYTONA_API_URL` |
+| AgentCore Runtime | The standard AWS credential chain: `AWS_*` environment variables, `~/.aws` profiles (`AWS_PROFILE`), SSO, or an instance/task role |
+| GKE Agent Sandbox | The in-cluster service account, otherwise `$KUBECONFIG` or `~/.kube/config` |
+
+Do not put secrets in a provider's `Config` map: it is passed as workflow and activity input and stored in plain text in Temporal's event history.
 
 ### Provider configuration
 
@@ -195,7 +294,7 @@ Each example is a self-contained Go module with a `starter` binary and a `worker
 
 | Example | What it shows |
 |---------|---------------|
-| `examples/file-management` | Sequential shell commands (create, read, list files) |
+| `examples/file-management` | Sequential shell commands (create, read, list files); sandbox runs on the dedicated sandbox worker |
 | `examples/auto-suspend` | Auto-suspend via `WithIdleTimeout`; file persists across suspend/resume |
 | `examples/explicit-suspend-resume` | Manual `Suspend` and `Resume` calls |
 | `examples/shared-sandbox` | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox` |
@@ -208,12 +307,13 @@ Each example is a self-contained Go module with a `starter` binary and a `worker
 
 - Go 1.26+
 - A running Temporal server (`temporal server start-dev`)
-- Credentials for the compute provider used by the example
+- Credentials for the compute provider used by the example (all examples use Modal; see [Credentials](#credentials))
 
 **Build**
 
 ```sh
-make bins   # builds starter and worker binaries for all examples
+make bins   # builds starter and worker binaries for all examples, plus sdk/sandbox-worker
+make test   # runs the SDK tests
 ```
 
 Or build a single example:
@@ -224,7 +324,15 @@ cd examples/file-management && go build -o starter ./cmd/starter && go build -o 
 
 **Run**
 
-Start the worker:
+`file-management` uses a dedicated sandbox worker, so start that first; it holds the compute-provider credentials:
+
+```sh
+./sdk/sandbox-worker
+```
+
+The other examples run the sandbox on their own worker and do not need it.
+
+Start the example's worker:
 
 ```sh
 ./examples/file-management/worker
@@ -240,8 +348,10 @@ Start the workflow:
 
 ```
 sdk/
-  sandbox.go              # Sandbox interface, NewSandbox, AttachToSandbox, WithSnapshot
-  sandbox_activity.go     # Register(), SendSandbox* activities
+  sandbox.go              # Sandbox interface, NewSandbox, AttachToSandbox, options
+  sandbox_activity.go     # Register*(), SendSandbox* activities
+  contract_test.go        # checks Go payload types against contract/fixtures
+  cmd/sandbox-worker/     # standalone worker for a dedicated sandbox task queue
   compute/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
@@ -262,4 +372,11 @@ examples/
   file-management/
   shared-sandbox/
   snapshot-fork/
+
+contract/fixtures/        # canonical JSON payloads shared by all language clients
+
+docs/
+  decisions/              # ADRs
+  design/                 # wire contract
+  plans/                  # implementation plans
 ```

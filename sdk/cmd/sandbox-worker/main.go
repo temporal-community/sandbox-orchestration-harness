@@ -1,3 +1,5 @@
+// ABOUTME: Standalone worker that hosts SandboxWorkflow and its activities on a dedicated task queue.
+// ABOUTME: Run it alongside workflows that use sandbox.WithTaskQueue, including workflows in other languages.
 package main
 
 import (
@@ -8,7 +10,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	example "github.com/temporal-community/sandbox-orchestration-harness/examples/file-management"
+	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
 )
 
 func main() {
@@ -28,12 +30,11 @@ func main() {
 	}
 	defer c.Close()
 
-	w := worker.New(c, example.TaskQueue, worker.Options{})
+	taskQueue := getEnv("SANDBOX_TASK_QUEUE", sandbox.DefaultSandboxTaskQueue)
+	w := worker.New(c, taskQueue, worker.Options{})
+	sandbox.Register(w, c)
 
-	// Only the example workflow is registered here. SandboxWorkflow and the
-	// sandbox activities run on the separate sandbox worker.
-	w.RegisterWorkflow(example.FileOpsWorkflow)
-
+	log.Printf("sandbox worker polling task queue %q", taskQueue)
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker exited with error: %v", err)
 	}

@@ -21,15 +21,22 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Register wires the sandbox SDK into a Temporal worker. It registers
-// SandboxWorkflow and all sandbox lifecycle activities (StartSandbox,
-// StopSandbox, SuspendSandbox, etc.) on w's task queue, and registers
-// the SendSandbox* activities that forward workflow updates from the
-// parent workflow's task queue. The Temporal client c is used by the
-// SendSandbox* activities to call UpdateWorkflow. The blank imports in
-// this file ensure all five built-in compute providers are self-registered
-// via their init functions before any activity runs.
+// Register wires the whole sandbox SDK into a Temporal worker: it calls both
+// RegisterSandboxWorkflow and RegisterClientActivities on w. Use it when the
+// worker serves both the workflows that create sandboxes and the sandboxes
+// themselves (the default, single-task-queue setup). The blank imports in this
+// file ensure all five built-in compute providers are self-registered via their
+// init functions before any activity runs.
 func Register(w worker.Registry, c client.Client) {
+	RegisterClientActivities(w, c)
+	RegisterSandboxWorkflow(w)
+}
+
+// RegisterClientActivities registers the SendSandbox* activities, which forward
+// a caller's requests to a SandboxWorkflow as workflow updates. They run on the
+// sandbox's task queue (see WithTaskQueue). The Temporal client c is used to
+// call UpdateWorkflow.
+func RegisterClientActivities(w worker.Registry, c client.Client) {
 	a := &sandboxActivities{client: c}
 	w.RegisterActivity(a.SendSandboxInit)
 	w.RegisterActivity(a.SendSandboxExecuteCommand)
@@ -37,7 +44,12 @@ func Register(w worker.Registry, c client.Client) {
 	w.RegisterActivity(a.SendSandboxResume)
 	w.RegisterActivity(a.SendSandboxSnapshot)
 	w.RegisterActivity(a.SendSandboxDeleteSnapshot)
+}
 
+// RegisterSandboxWorkflow registers SandboxWorkflow and the sandbox lifecycle
+// activities (StartSandbox, StopSandbox, ExecuteCommand, etc.) that call the
+// compute providers. The worker running these needs the providers' credentials.
+func RegisterSandboxWorkflow(w worker.Registry) {
 	w.RegisterWorkflow(wfIface.SandboxWorkflow)
 	w.RegisterActivity(wfIface.StartSandbox)
 	w.RegisterActivity(wfIface.StopSandbox)
@@ -54,10 +66,10 @@ type sandboxActivities struct {
 }
 
 type SendSandboxExecuteCommandInput struct {
-	SandboxID         string
-	UpdateID          string
-	Command           string
-	DisableAutoResume bool
+	SandboxID         string `json:"sandbox_id"`
+	UpdateID          string `json:"update_id"`
+	Command           string `json:"command"`
+	DisableAutoResume bool   `json:"disable_auto_resume"`
 }
 
 func (a *sandboxActivities) SendSandboxExecuteCommand(ctx context.Context, input SendSandboxExecuteCommandInput) (compute.CommandResult, error) {
@@ -79,8 +91,8 @@ func (a *sandboxActivities) SendSandboxExecuteCommand(ctx context.Context, input
 }
 
 type SendSandboxSuspendInput struct {
-	SandboxID string
-	UpdateID  string
+	SandboxID string `json:"sandbox_id"`
+	UpdateID  string `json:"update_id"`
 }
 
 func (a *sandboxActivities) SendSandboxSuspend(ctx context.Context, input SendSandboxSuspendInput) error {
@@ -101,8 +113,8 @@ func (a *sandboxActivities) SendSandboxSuspend(ctx context.Context, input SendSa
 }
 
 type SendSandboxResumeInput struct {
-	SandboxID string
-	UpdateID  string
+	SandboxID string `json:"sandbox_id"`
+	UpdateID  string `json:"update_id"`
 }
 
 func (a *sandboxActivities) SendSandboxResume(ctx context.Context, input SendSandboxResumeInput) error {
@@ -123,11 +135,11 @@ func (a *sandboxActivities) SendSandboxResume(ctx context.Context, input SendSan
 }
 
 type SendSandboxInitInput struct {
-	SandboxID       string
-	UpdateID        string
-	ComputeProvider compute.ProviderDetails
-	IdleTimeout     time.Duration
-	Snapshot        *compute.ProviderSnapshot // nil → fresh start
+	SandboxID       string                    `json:"sandbox_id"`
+	UpdateID        string                    `json:"update_id"`
+	ComputeProvider compute.ProviderDetails   `json:"compute_provider"`
+	IdleTimeout     time.Duration             `json:"idle_timeout"`
+	Snapshot        *compute.ProviderSnapshot `json:"snapshot"` // nil → fresh start
 }
 
 func (a *sandboxActivities) SendSandboxInit(ctx context.Context, input SendSandboxInitInput) error {
@@ -148,8 +160,8 @@ func (a *sandboxActivities) SendSandboxInit(ctx context.Context, input SendSandb
 }
 
 type SendSandboxSnapshotInput struct {
-	SandboxID string
-	UpdateID  string
+	SandboxID string `json:"sandbox_id"`
+	UpdateID  string `json:"update_id"`
 }
 
 func (a *sandboxActivities) SendSandboxSnapshot(ctx context.Context, input SendSandboxSnapshotInput) (*compute.ProviderSnapshot, error) {
@@ -171,9 +183,9 @@ func (a *sandboxActivities) SendSandboxSnapshot(ctx context.Context, input SendS
 }
 
 type SendSandboxDeleteSnapshotInput struct {
-	SandboxID string
-	UpdateID  string
-	Snapshot  *compute.ProviderSnapshot
+	SandboxID string                    `json:"sandbox_id"`
+	UpdateID  string                    `json:"update_id"`
+	Snapshot  *compute.ProviderSnapshot `json:"snapshot"`
 }
 
 func (a *sandboxActivities) SendSandboxDeleteSnapshot(ctx context.Context, input SendSandboxDeleteSnapshotInput) error {
