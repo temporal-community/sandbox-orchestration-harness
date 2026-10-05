@@ -1,0 +1,38 @@
+# Reference Crafting Template for agent workflows driven by the Temporal
+# Sandbox Orchestration Harness.
+#
+# Create it once per organization, then point the provider at it:
+#
+#   cs template create agent-sandbox sdk/compute/crafting/agent-sandbox.yaml
+#
+#   Config: map[string]string{
+#     "template":     "agent-sandbox",
+#     "workspace":    "dev",
+#     "dependencies": "db",
+#   }
+#
+# The shape matters more than the specific services. A workspace on its own
+# behaves like any other sandbox provider. Listing dependencies is what lets a
+# snapshot carry the agent's data as well as its files, so a fork resumes against
+# a database that matches the workspace it came with.
+workspaces:
+  - name: dev
+    # The default workspace image already provides a psql client. These point it
+    # at the dependency below using the standard libpq variables, which is all
+    # the database-fork example relies on.
+    env:
+      - PGHOST=db
+      - PGUSER=postgres
+
+    # Uncomment to give the agent a repository to work in. Checkouts land under
+    # the home directory, so they are captured by home snapshots.
+    #
+    # checkouts:
+    #   - path: app
+    #     repo:
+    #       git: github:your-org/your-repo
+
+dependencies:
+  - name: db
+    service_type: postgres
+    version: "16"

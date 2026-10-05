@@ -120,10 +120,11 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Five providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Six providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
+| Crafting | `compute.ProviderTypeCrafting` | `sdk/compute/crafting` |
 | E2B | `compute.ProviderTypeE2B` | `sdk/compute/e2b` |
 | Daytona | `compute.ProviderTypeDaytona` | `sdk/compute/daytona` |
 | AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
@@ -134,6 +135,7 @@ Five providers are included. All implement `compute.Provider` and self-register 
 
 | Provider | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
 |----------|:-----:|:----:|:-------:|:------:|:--------------:|:--------:|:-----------------:|
+| Crafting | ✓ | ✓ | ✓ | ✓ | ✓ | ✓‡ | ✓‡ |
 | E2B | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
@@ -142,9 +144,42 @@ Five providers are included. All implement `compute.Provider` and self-register 
 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
+‡ Crafting snapshots are composite: the workspace home directory, the data of each dependency named in `dependencies`, and optionally the workspace root filesystem, recorded under one opaque snapshot ID. Work must live under `$HOME` to be captured unless `snapshot-base` is enabled. Forks are fully independent in both files and data.
+
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
 
 ### Provider configuration
+
+**Crafting** — `compute.ProviderTypeCrafting`
+
+Requires the `cs` CLI on the worker host. A Crafting sandbox is a workspace plus the dependency workloads it talks to, so snapshots are composite: naming `dependencies` captures their data alongside the workspace home, and a fork restores both together.
+
+The provider is a thin adapter over [`crafting-demo/lightweight-go-client`](https://github.com/crafting-demo/lightweight-go-client), a standalone Go client for Crafting sandboxes that carries the CLI mechanics and has no dependencies outside the standard library.
+
+| Key | Description |
+|-----|-------------|
+| `template` | Crafting Template new sandboxes are created from (required) |
+| `workspace` | Workspace workload used for commands and snapshots (required) |
+| `dependencies` | Comma-separated dependency workloads whose data is part of a snapshot |
+| `folder` / `snapshot-folder` / `org` / `region` | Placement (optional) |
+| `use-pool` | Claim from a Sandbox Pool for faster starts (default: `auto`) |
+| `snapshot-base` | Also capture the workspace root filesystem (default: `false`) |
+| `home-includes` / `home-excludes` | Paths captured in a home snapshot (default: all of `$HOME`) |
+| `exec-uid` / `exec-dir` | Identity and working directory for commands (default: uid 1000) |
+| `token` / `config-dir` | Service-account token and isolated CLI state. Omit `token` when the worker runs inside a Crafting sandbox and already has credentials |
+
+`sdk/compute/crafting/agent-sandbox.yaml` is a reference template with a workspace and a Postgres dependency. Create it once per organization:
+
+```sh
+cs template create agent-sandbox sdk/compute/crafting/agent-sandbox.yaml
+```
+
+To run the `database-fork` example against it:
+
+```sh
+export SANDBOX_PROVIDER=crafting
+export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","dependencies":"db"}'
+```
 
 **E2B** — `compute.ProviderTypeE2B`
 
@@ -201,6 +236,7 @@ Each example is a self-contained Go module with a `starter` binary and a `worker
 | `examples/shared-sandbox` | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox` |
 | `examples/detached-sandbox` | `CleanupDisabled` sandbox handed off to an independent workflow |
 | `examples/snapshot-fork` | Snapshot an origin sandbox then branch two independent forks from it |
+| `examples/database-fork` | Snapshot a sandbox that holds database state as well as files, then apply a different migration in each fork |
 
 ### Running an example
 
@@ -236,6 +272,13 @@ Start the workflow:
 ./examples/file-management/starter
 ```
 
+The `database-fork` example is provider-agnostic and reads its provider from the environment. The sandbox needs a `psql` client and the standard libpq variables (`PGHOST`, `PGUSER`, ...) pointing at a Postgres database. Forks only get isolated rows when the provider's snapshots include that database.
+
+```sh
+export SANDBOX_PROVIDER=<provider type>                     # required, e.g. the value of a compute.ProviderType* constant
+export SANDBOX_PROVIDER_CONFIG='{"key":"value"}'            # provider configuration as a JSON object of strings
+```
+
 ## Repository layout
 
 ```
@@ -246,6 +289,7 @@ sdk/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
+    crafting/             # Crafting provider + reference sandbox template
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
     modal/provider.go     # Modal provider
@@ -257,6 +301,7 @@ sdk/
 
 examples/
   auto-suspend/
+  database-fork/
   detached-sandbox/
   explicit-suspend-resume/
   file-management/

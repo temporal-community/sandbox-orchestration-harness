@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/agentcore"
+	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/crafting"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/daytona"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/e2b"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/gkeagentsandbox"
