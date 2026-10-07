@@ -1,0 +1,8 @@
+{
+  "default": {
+    "type": "e2b",
+    "config": {
+      "template-id": "YOUR_E2B_TEMPLATE_ID"
+    }
+  }
+}

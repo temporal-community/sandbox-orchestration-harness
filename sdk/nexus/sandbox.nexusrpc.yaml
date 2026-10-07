@@ -1,0 +1,93 @@
+nexusrpc: "1.0.0"
+$schema: https://json-schema.org/draft/2020-12/schema
+services:
+  SandboxControl:
+    fqn: sandbox.control.v1
+    operations:
+      create:
+        input: { $ref: "#/$defs/CreateInput" }
+      execute:
+        input: { $ref: "#/$defs/ExecuteInput" }
+        output: { $ref: "#/$defs/CommandResult" }
+      suspend:
+        input: { $ref: "#/$defs/SandboxHandle" }
+      resume:
+        input: { $ref: "#/$defs/SandboxHandle" }
+      snapshot:
+        input: { $ref: "#/$defs/SandboxHandle" }
+        output: { $ref: "#/$defs/SnapshotHandle" }
+      fork:
+        input: { $ref: "#/$defs/ForkInput" }
+      delete:
+        x-ts-name: deleteSandbox
+        input: { $ref: "#/$defs/SandboxHandle" }
+      deleteSnapshot:
+        input: { $ref: "#/$defs/DeleteSnapshotInput" }
+      describe:
+        input: { $ref: "#/$defs/SandboxHandle" }
+        output: { $ref: "#/$defs/SandboxDescription" }
+$defs:
+  CreateInput:
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+      profile: { type: string, minLength: 1 }
+      idle_timeout_seconds: { type: integer, minimum: -1, maximum: 86400, default: 0 }
+    required: [sandbox_id, profile]
+  SandboxHandle:
+    description: Persistent sandbox identity, distinct from a Nexus operation token.
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+    required: [sandbox_id]
+  ExecuteInput:
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+      command: { type: string, minLength: 1 }
+      disable_auto_resume: { type: boolean, default: false }
+    required: [sandbox_id, command]
+  CommandResult:
+    type: object
+    additionalProperties: false
+    properties:
+      stdout: { type: string }
+      stderr: { type: string }
+      exit_code: { type: integer }
+    required: [stdout, stderr, exit_code]
+  SnapshotHandle:
+    description: Provider snapshot ID. Keep the provider profile when forking it.
+    type: object
+    additionalProperties: false
+    properties:
+      snapshot_id: { type: string, minLength: 1 }
+    required: [snapshot_id]
+  DeleteSnapshotInput:
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+      snapshot_id: { type: string, minLength: 1 }
+    required: [sandbox_id, snapshot_id]
+  ForkInput:
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+      profile: { type: string, minLength: 1 }
+      snapshot_id: { type: string, minLength: 1 }
+      idle_timeout_seconds: { type: integer, minimum: -1, maximum: 86400, default: 0 }
+    required: [sandbox_id, profile, snapshot_id]
+  SandboxDescription:
+    type: object
+    additionalProperties: false
+    properties:
+      sandbox_id: { type: string, minLength: 1 }
+      lifecycle:
+        type: string
+        enum: [pending, running, suspended, suspended_with_snapshot, failed, deleted]
+      instance_id: { type: string }
+    required: [sandbox_id, lifecycle, instance_id]

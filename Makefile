@@ -5,6 +5,12 @@ bins: examples-auto-suspend-starter examples-auto-suspend-worker examples-detach
 # Install all tools, run all possible checks and tests (long but comprehensive).
 all: clean bins
 
+# Pin the CLI to nexgen 0.2.3 when regenerating checked-in bindings.
+.PHONY: generate-nexus
+generate-nexus:
+	nexgen go sdk/nexus/sandbox.nexusrpc.yaml --output sdk/generated/nexus
+	nexgen python sdk/nexus/sandbox.nexusrpc.yaml --output examples/nexus-agent/generated/sandbox_contract
+
 # Delete all build artifacts
 clean: clean-bins
 ########################################################################
