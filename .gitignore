@@ -1,2 +1,8 @@
 examples/*/starter
 examples/*/worker
+sdk/sandbox-worker
+
+# Local environment files that may hold credentials
+.env
+.env.*
+!.env.example

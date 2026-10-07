@@ -58,17 +58,19 @@ type (
 )
 
 // sandboxRefData is the JSON payload encoded inside an opaque sandbox reference.
-// Version must equal sandboxRefVersion; unknown versions are rejected so future
-// format changes can be detected rather than silently misread.
+// Version 2 added TaskQueue; version 1 refs are still accepted and carry no task
+// queue (the attaching workflow's own queue is used). Unknown versions are
+// rejected so future format changes can be detected rather than silently misread.
 type sandboxRefData struct {
 	Version   int    `json:"v"`
 	SandboxID string `json:"sandbox_id"`
+	TaskQueue string `json:"task_queue,omitempty"` // empty → the attaching workflow's task queue
 }
 
-const sandboxRefVersion = 1
+const sandboxRefVersion = 2
 
-func encodeRef(sandboxID string) (string, error) {
-	data, err := json.Marshal(sandboxRefData{Version: sandboxRefVersion, SandboxID: sandboxID})
+func encodeRef(sandboxID, taskQueue string) (string, error) {
+	data, err := json.Marshal(sandboxRefData{Version: sandboxRefVersion, SandboxID: sandboxID, TaskQueue: taskQueue})
 	if err != nil {
 		return "", fmt.Errorf("sandbox: encode ref: %w", err)
 	}
@@ -84,8 +86,8 @@ func decodeRef(ref string) (sandboxRefData, error) {
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return sandboxRefData{}, fmt.Errorf("sandbox: invalid ref: %w", err)
 	}
-	if data.Version != sandboxRefVersion {
-		return sandboxRefData{}, fmt.Errorf("sandbox: unsupported ref version %d (expected %d)", data.Version, sandboxRefVersion)
+	if data.Version != 1 && data.Version != sandboxRefVersion {
+		return sandboxRefData{}, fmt.Errorf("sandbox: unsupported ref version %d (expected 1 or %d)", data.Version, sandboxRefVersion)
 	}
 	if data.SandboxID == "" {
 		return sandboxRefData{}, fmt.Errorf("sandbox: ref missing sandboxId")
@@ -131,6 +133,20 @@ type sandboxConfig struct {
 	cleanup     CleanupBehavior   // zero value == CleanupWithWorkflow
 	idleTimeout time.Duration     // zero → use default (idleAutoSuspendTimeout)
 	snapshot    *ProviderSnapshot // nil → fresh start
+	taskQueue   string            // empty → the calling workflow's task queue
+}
+
+// DefaultSandboxTaskQueue is the conventional task queue for a dedicated sandbox
+// worker (see cmd/sandbox-worker). Pass it to WithTaskQueue to opt in.
+const DefaultSandboxTaskQueue = "temporal-sandbox"
+
+// WithTaskQueue runs the sandbox workflow and the SendSandbox* activities on the
+// named task queue instead of the calling workflow's task queue. A worker polling
+// that queue must register both SandboxWorkflow and the client activities (see
+// Register). Use this to run sandboxes on a dedicated worker, for example one
+// shared with workflows written in other languages.
+func WithTaskQueue(name string) SandboxOption {
+	return func(c *sandboxConfig) { c.taskQueue = name }
 }
 
 // WithCleanup sets the cleanup behavior for the sandbox.
@@ -160,7 +176,17 @@ func WithSnapshot(s *ProviderSnapshot) SandboxOption {
 // defaultSandbox additionally implements OwnedSandbox.Stop.
 type sandboxBase struct {
 	sandboxID  string
+	taskQueue  string // empty → the calling workflow's task queue
 	activities *sandboxActivities
+}
+
+// activityContext returns ctx configured to run a SendSandbox* activity on the
+// sandbox's task queue with the given start-to-close timeout.
+func (b *sandboxBase) activityContext(ctx workflow.Context, timeout time.Duration) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           b.taskQueue,
+		StartToCloseTimeout: timeout,
+	})
 }
 
 func (b *sandboxBase) ExecuteCommand(ctx workflow.Context, cmd string, opts ...ExecuteCommandOption) (*compute.CommandResult, error) {
@@ -174,7 +200,7 @@ func (b *sandboxBase) ExecuteCommand(ctx workflow.Context, cmd string, opts ...E
 	}
 	var result compute.CommandResult
 	err = workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 20 * time.Minute}),
+		b.activityContext(ctx, 20*time.Minute),
 		b.activities.SendSandboxExecuteCommand,
 		SendSandboxExecuteCommandInput{UpdateID: updateID, SandboxID: b.sandboxID, Command: cmd, DisableAutoResume: cfg.disableAutoResume},
 	).Get(ctx, &result)
@@ -190,7 +216,7 @@ func (b *sandboxBase) Suspend(ctx workflow.Context) error {
 		return err
 	}
 	return workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute}),
+		b.activityContext(ctx, 10*time.Minute),
 		b.activities.SendSandboxSuspend, SendSandboxSuspendInput{UpdateID: updateID, SandboxID: b.sandboxID},
 	).Get(ctx, nil)
 }
@@ -201,7 +227,7 @@ func (b *sandboxBase) Resume(ctx workflow.Context) error {
 		return err
 	}
 	return workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute}),
+		b.activityContext(ctx, 10*time.Minute),
 		b.activities.SendSandboxResume, SendSandboxResumeInput{UpdateID: updateID, SandboxID: b.sandboxID},
 	).Get(ctx, nil)
 }
@@ -213,7 +239,7 @@ func (b *sandboxBase) Snapshot(ctx workflow.Context) (*ProviderSnapshot, error) 
 	}
 	var snapshot ProviderSnapshot
 	err = workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute}),
+		b.activityContext(ctx, 10*time.Minute),
 		b.activities.SendSandboxSnapshot, SendSandboxSnapshotInput{UpdateID: updateID, SandboxID: b.sandboxID},
 	).Get(ctx, &snapshot)
 	if err != nil {
@@ -228,7 +254,7 @@ func (b *sandboxBase) DeleteSnapshot(ctx workflow.Context, snapshot *ProviderSna
 		return err
 	}
 	return workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute}),
+		b.activityContext(ctx, 10*time.Minute),
 		b.activities.SendSandboxDeleteSnapshot, SendSandboxDeleteSnapshotInput{UpdateID: updateID, SandboxID: b.sandboxID, Snapshot: snapshot},
 	).Get(ctx, nil)
 }
@@ -245,7 +271,7 @@ func (b *sandboxBase) RequestStop(ctx workflow.Context) error {
 	return nil
 }
 
-func (b *sandboxBase) Ref() (string, error) { return encodeRef(b.sandboxID) }
+func (b *sandboxBase) Ref() (string, error) { return encodeRef(b.sandboxID, b.taskQueue) }
 
 type defaultSandbox struct {
 	sandboxBase
@@ -281,7 +307,7 @@ func NewSandbox(ctx workflow.Context, sandboxProvider Provider, opts ...SandboxO
 	}
 
 	s := &defaultSandbox{
-		sandboxBase: sandboxBase{sandboxID: sandboxID, activities: &sandboxActivities{}},
+		sandboxBase: sandboxBase{sandboxID: sandboxID, taskQueue: cfg.taskQueue, activities: &sandboxActivities{}},
 	}
 
 	if err := s.start(ctx, sandboxProvider, cfg); err != nil {
@@ -302,6 +328,7 @@ func (s *defaultSandbox) start(ctx workflow.Context, computeProvider compute.Pro
 
 	cwo := workflow.ChildWorkflowOptions{
 		WorkflowID:        s.sandboxID,
+		TaskQueue:         s.taskQueue,
 		ParentClosePolicy: parentClosePolicy,
 	}
 	info := workflow.GetInfo(ctx)
@@ -325,9 +352,7 @@ func (s *defaultSandbox) start(ctx workflow.Context, computeProvider compute.Pro
 		return err
 	}
 	return workflow.ExecuteActivity(
-		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 10 * time.Minute,
-		}),
+		s.activityContext(ctx, 10*time.Minute),
 		s.activities.SendSandboxInit,
 		SendSandboxInitInput{UpdateID: updateID, SandboxID: s.sandboxID, ComputeProvider: computeProvider, IdleTimeout: cfg.idleTimeout, Snapshot: cfg.snapshot},
 	).Get(ctx, nil)
@@ -363,7 +388,7 @@ func AttachToSandbox(ref string) (Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sandboxRef{sandboxBase: sandboxBase{sandboxID: data.SandboxID, activities: &sandboxActivities{}}}, nil
+	return &sandboxRef{sandboxBase: sandboxBase{sandboxID: data.SandboxID, taskQueue: data.TaskQueue, activities: &sandboxActivities{}}}, nil
 }
 
 type sandboxRef struct {
