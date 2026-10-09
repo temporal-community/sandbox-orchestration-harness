@@ -120,11 +120,12 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Six providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Seven providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
 | Crafting | `compute.ProviderTypeCrafting` | `sdk/compute/crafting` |
+| Smol Machines Cloud | `compute.ProviderTypeSmolCloud` | `sdk/compute/smolcloud` |
 | E2B | `compute.ProviderTypeE2B` | `sdk/compute/e2b` |
 | Daytona | `compute.ProviderTypeDaytona` | `sdk/compute/daytona` |
 | AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
@@ -136,6 +137,7 @@ Six providers are included. All implement `compute.Provider` and self-register v
 | Provider | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
 |----------|:-----:|:----:|:-------:|:------:|:--------------:|:--------:|:-----------------:|
 | Crafting | ✓ | ✓ | ✓ | ✓ | ✓ | ✓‡ | ✓‡ |
+| Smol Machines Cloud | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | E2B | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
@@ -149,6 +151,40 @@ Providers without native Suspend/Resume (Modal, GKE) automatically get suspend s
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
 
 ### Provider configuration
+
+**Smol Machines Cloud** — `compute.ProviderTypeSmolCloud`
+
+Set `SMOL_CLOUD_TOKEN` on the Temporal activity worker and blank-import
+`github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/smolcloud`
+where the worker registers activities. The token is read from the worker's
+environment, never from the workflow's provider config. An optional
+`SMOL_CLOUD_URL` on the worker selects another control-plane endpoint.
+
+```go
+provider := sandbox.Provider{
+    Type: compute.ProviderTypeSmolCloud,
+    Config: map[string]string{
+        "image": "python:3.12-alpine",
+        "network": "open", // required for uncached image pulls; allows guest egress
+    },
+}
+```
+
+The `image` is required. Optional config keys are `cpus`, `memory-mb`, and
+`disk-gb` (positive integers) and `network` (`blocked`, `open`, or
+`allowCidrs`). The default size is 1 vCPU and 512 MB; machines are created
+branchable so they can produce checkpoints.
+
+Network access defaults to `blocked`. An uncached registry image cannot be
+pulled in that mode. For restricted egress, set `network` to `allowCidrs` and
+provide comma-separated `allow-cidrs` and/or `allow-hosts` entries, including
+all registry hosts needed for the image pull. `open` allows unrestricted guest
+egress. Snapshot returns a durable checkpoint while the source keeps running;
+restore creates a separate VM with the configured network policy. Older cloud
+servers force blocked egress on restore; the provider checks the response and
+refuses to boot if its network policy does not match the requested policy.
+HTTP API calls run on the Temporal activity worker; the sandbox image does
+not need a Temporal worker.
 
 **Crafting** — `compute.ProviderTypeCrafting`
 
