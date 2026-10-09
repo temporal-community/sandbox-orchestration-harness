@@ -12,11 +12,16 @@ import (
 )
 
 // Run with SMOL_CLOUD_LIVE=1 and SMOL_CLOUD_TOKEN on an activity worker.
+// Set SMOL_CLOUD_LIVE_NETWORKED=1 to verify networked restores after Cloud API rollout.
 func TestCloudLiveCheckpointResume(t *testing.T) {
 	if os.Getenv("SMOL_CLOUD_LIVE") != "1" {
 		t.Skip("set SMOL_CLOUD_LIVE=1 and SMOL_CLOUD_TOKEN to test the live cloud")
 	}
-	instance, err := New(map[string]string{"image": "alpine:3.20", "network": "blocked"})
+	network := "blocked"
+	if os.Getenv("SMOL_CLOUD_LIVE_NETWORKED") == "1" {
+		network = "open"
+	}
+	instance, err := New(map[string]string{"image": "alpine:3.20", "network": network})
 	if err != nil {
 		t.Fatal(err)
 	}

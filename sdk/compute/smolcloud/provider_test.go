@@ -94,7 +94,7 @@ func TestCloudLifecycleAndSnapshot(t *testing.T) {
 	if err != nil || fork.InstanceID != "mach-restored" {
 		t.Fatalf("restore: %v %v", fork, err)
 	}
-	if restored["name"] == created["name"] || len(restored) != 1 {
+	if restored["name"] == created["name"] || restored["network"].(map[string]any)["mode"] != "blocked" {
 		t.Fatalf("restore request: %v", restored)
 	}
 	if err := p.Stop(ctx, fork); err != nil {
@@ -200,6 +200,15 @@ func TestRestoreRejectsNetworkPolicyChangeBeforeBoot(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/checkpoints/cp-123/restore":
+			var request struct {
+				Network networkPolicy `json:"network"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			if request.Network.Mode != "blocked" {
+				t.Errorf("restore network: %+v", request.Network)
+			}
 			fmt.Fprint(w, `{"id":"mach-bad","network":{"mode":"open"}}`)
 		case "DELETE /v1/machines/mach-bad":
 			deleted = true
@@ -346,5 +355,43 @@ func TestRestrictedEgressSentOnCreate(t *testing.T) {
 	}
 	if !instance.(*provider).sameNetwork(policy) {
 		t.Fatalf("allowlist omitted from create: %+v", policy)
+	}
+}
+
+func TestRestoreRequestsNetworkPolicy(t *testing.T) {
+	t.Setenv("SMOL_CLOUD_TOKEN", "test-token")
+	policy := networkPolicy{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/checkpoints/checkpoint/restore":
+			var request struct {
+				Network networkPolicy `json:"network"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			policy = request.Network
+			fmt.Fprint(w, `{"id":"restored","network":{"mode":"allowCidrs","hosts":["example.com"]}}`)
+		case "POST /v1/machines/restored/start":
+			w.WriteHeader(http.StatusNoContent)
+		case "GET /v1/machines/restored":
+			fmt.Fprint(w, `{"state":"started","ready":true}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("SMOL_CLOUD_URL", server.URL)
+	instance, err := New(map[string]string{"image": "alpine", "network": "allowCidrs", "allow-hosts": "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = instance.StartFromSnapshot(context.Background(), "queue", &compute.ProviderSnapshot{SnapshotID: "checkpoint"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !instance.(*provider).sameNetwork(policy) {
+		t.Fatalf("restore policy missing: %+v", policy)
 	}
 }

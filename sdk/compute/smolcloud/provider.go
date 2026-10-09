@@ -223,7 +223,7 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 		ID      string        `json:"id"`
 		Network networkPolicy `json:"network"`
 	}
-	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{"name": name}, &created)
+	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{"name": name, "network": p.networkPolicy()}, &created)
 	recovered := isStatus(err, http.StatusConflict)
 	if recovered {
 		created.ID, created.Network, err = p.findOwned(ctx, name)

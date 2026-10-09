@@ -180,12 +180,11 @@ pulled in that mode. For restricted egress, set `network` to `allowCidrs` and
 provide comma-separated `allow-cidrs` and/or `allow-hosts` entries, including
 all registry hosts needed for the image pull. `open` allows unrestricted guest
 egress. Snapshot returns a durable checkpoint while the source keeps running;
-restore creates a separate VM. The cloud restore API currently enforces blocked
-network access; the provider refuses to boot a restored VM when the requested
-policy is different. If your workflow needs both network access and checkpoint
-restores, wait for the cloud API to support a network policy on restore. HTTP
-API calls run on the Temporal activity worker; the sandbox image does not need
-a Temporal worker.
+restore creates a separate VM with the configured network policy. Older cloud
+servers force blocked egress on restore; the provider checks the response and
+refuses to boot if its network policy does not match the requested policy.
+HTTP API calls run on the Temporal activity worker; the sandbox image does
+not need a Temporal worker.
 
 **Crafting** — `compute.ProviderTypeCrafting`
 
