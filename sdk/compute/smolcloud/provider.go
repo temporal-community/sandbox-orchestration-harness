@@ -121,21 +121,21 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 		resources["diskGb"] = p.diskGB
 	}
 	var created struct {
-		ID string `json:"id"`
+		ID      string        `json:"id"`
+		Network networkPolicy `json:"network"`
 	}
 	err = p.request(ctx, http.MethodPost, "/v1/machines", map[string]any{
 		"name":       name,
 		"source":     map[string]string{"type": "image", "reference": p.image},
 		"resources":  resources,
-		"network":    map[string]string{"mode": p.network},
+		"network":    p.networkPolicy(),
 		"branchable": true,
-		"forkable":   true, // accepted by older cloud controls
 		"env":        map[string]string{"TEMPORAL_TASK_QUEUE": taskQueueName},
 		"labels":     map[string]string{"temporal-harness": "smol-cloud"},
 	}, &created)
 	recovered := isStatus(err, http.StatusConflict)
 	if recovered {
-		created.ID, _, err = p.findOwned(ctx, name)
+		created.ID, created.Network, err = p.findOwned(ctx, name)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("smol-cloud: create: %w", err)
@@ -143,12 +143,20 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 	if created.ID == "" {
 		return nil, fmt.Errorf("smol-cloud: create returned no machine id")
 	}
+	if !p.sameNetwork(created.Network) {
+		if !recovered {
+			p.cleanup(created.ID)
+		}
+		return nil, fmt.Errorf("smol-cloud: created machine network policy differs from requested policy")
+	}
 	start := p.start
 	if recovered {
 		start = p.startRecovered
 	}
 	if err := start(ctx, created.ID); err != nil {
-		p.cleanup(created.ID)
+		if !recovered {
+			p.cleanup(created.ID)
+		}
 		return nil, err
 	}
 	return &compute.ProviderStatus{InstanceID: created.ID}, nil
@@ -215,9 +223,7 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 		ID      string        `json:"id"`
 		Network networkPolicy `json:"network"`
 	}
-	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{
-		"name": name, "network": p.networkPolicy(),
-	}, &created)
+	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{"name": name}, &created)
 	recovered := isStatus(err, http.StatusConflict)
 	if recovered {
 		created.ID, created.Network, err = p.findOwned(ctx, name)
@@ -229,7 +235,9 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 		return nil, fmt.Errorf("smol-cloud: restore returned no machine id")
 	}
 	if !p.sameNetwork(created.Network) {
-		p.cleanup(created.ID)
+		if !recovered {
+			p.cleanup(created.ID)
+		}
 		return nil, fmt.Errorf("smol-cloud: restored machine network policy differs from requested policy")
 	}
 	start := p.start
@@ -237,7 +245,9 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 		start = p.startRecovered
 	}
 	if err := start(ctx, created.ID); err != nil {
-		p.cleanup(created.ID)
+		if !recovered {
+			p.cleanup(created.ID)
+		}
 		return nil, err
 	}
 	return &compute.ProviderStatus{InstanceID: created.ID}, nil

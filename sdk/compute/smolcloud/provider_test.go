@@ -28,7 +28,7 @@ func TestCloudLifecycleAndSnapshot(t *testing.T) {
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/machines":
 			_ = json.NewDecoder(r.Body).Decode(&created)
-			fmt.Fprint(w, `{"id":"mach-original"}`)
+			fmt.Fprint(w, `{"id":"mach-original","network":{"mode":"blocked"}}`)
 		case "POST /v1/checkpoints/cp-123/restore":
 			_ = json.NewDecoder(r.Body).Decode(&restored)
 			fmt.Fprint(w, `{"id":"mach-restored","network":{"mode":"blocked"}}`)
@@ -73,7 +73,7 @@ func TestCloudLifecycleAndSnapshot(t *testing.T) {
 	if created["source"].(map[string]any)["reference"] != "python:3.12" || created["resources"].(map[string]any)["memoryMb"] != float64(1024) || created["env"].(map[string]any)["TEMPORAL_TASK_QUEUE"] != "queue-1" {
 		t.Fatalf("create request: %v", created)
 	}
-	if created["network"].(map[string]any)["mode"] != "blocked" || created["forkable"] != true || created["branchable"] != true || created["resources"].(map[string]any)["cpus"] != float64(1) {
+	if created["network"].(map[string]any)["mode"] != "blocked" || created["forkable"] != nil || created["branchable"] != true || created["resources"].(map[string]any)["cpus"] != float64(1) {
 		t.Fatal("unexpected sandbox defaults or missing checkpoint support")
 	}
 	result, err := p.ExecuteCommand(ctx, status, "exit 7")
@@ -94,7 +94,7 @@ func TestCloudLifecycleAndSnapshot(t *testing.T) {
 	if err != nil || fork.InstanceID != "mach-restored" {
 		t.Fatalf("restore: %v %v", fork, err)
 	}
-	if restored["name"] == created["name"] || restored["network"].(map[string]any)["mode"] != "blocked" {
+	if restored["name"] == created["name"] || len(restored) != 1 {
 		t.Fatalf("restore request: %v", restored)
 	}
 	if err := p.Stop(ctx, fork); err != nil {
@@ -138,7 +138,7 @@ func TestFailedStartDeletesMachineAndStopHandlesMissing(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/machines":
-			fmt.Fprint(w, `{"id":"mach-1"}`)
+			fmt.Fprint(w, `{"id":"mach-1","network":{"mode":"blocked"}}`)
 		case "POST /v1/machines/mach-1/start":
 			w.WriteHeader(http.StatusBadRequest)
 		case "DELETE /v1/machines/mach-1":
@@ -250,5 +250,101 @@ func TestRestrictedEgressValidationAndRestore(t *testing.T) {
 	}
 	if p.sameNetwork(networkPolicy{Mode: "allowCidrs", Hosts: []string{"api.github.com", "evil.example"}, CIDRs: []string{"192.0.2.0/24"}}) {
 		t.Fatal("different allowlist must be rejected")
+	}
+}
+
+func TestCreateRejectsUnexpectedNetworkBeforeBoot(t *testing.T) {
+	t.Setenv("SMOL_CLOUD_TOKEN", "test-token")
+	deleted, started := false, false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/machines":
+			fmt.Fprint(w, `{"id":"mach-unexpected","network":{"mode":"open"}}`)
+		case "DELETE /v1/machines/mach-unexpected":
+			deleted = true
+			w.WriteHeader(http.StatusNoContent)
+		case "POST /v1/machines/mach-unexpected/start":
+			started = true
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("SMOL_CLOUD_URL", server.URL)
+	instance, err := New(map[string]string{"image": "alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = instance.Start(context.Background(), "queue")
+	if err == nil || !deleted || started {
+		t.Fatalf("unexpected policy must cleanup before boot: deleted=%t started=%t err=%v", deleted, started, err)
+	}
+}
+
+func TestRecoveredStartFailureKeepsExistingMachine(t *testing.T) {
+	t.Setenv("SMOL_CLOUD_TOKEN", "test-token")
+	deleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/machines":
+			w.WriteHeader(http.StatusConflict)
+		case "GET /v1/machines":
+			name, _ := machineName("queue", "")
+			fmt.Fprintf(w, `{"machines":[{"id":"owned","name":%q,"labels":{"temporal-harness":"smol-cloud"},"network":{"mode":"blocked"}}]}`, name)
+		case "GET /v1/machines/owned":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "DELETE /v1/machines/owned":
+			deleted = true
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("SMOL_CLOUD_URL", server.URL)
+	instance, err := New(map[string]string{"image": "alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Start(context.Background(), "queue"); err == nil || deleted {
+		t.Fatalf("failed recovery must preserve existing VM: deleted=%t err=%v", deleted, err)
+	}
+}
+
+func TestRestrictedEgressSentOnCreate(t *testing.T) {
+	t.Setenv("SMOL_CLOUD_TOKEN", "test-token")
+	var policy networkPolicy
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/machines":
+			var body struct {
+				Network networkPolicy `json:"network"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			policy = body.Network
+			fmt.Fprint(w, `{"id":"restricted","network":{"mode":"allowCidrs","cidrs":["192.0.2.0/24"],"hosts":["example.com"]}}`)
+		case "POST /v1/machines/restricted/start":
+			w.WriteHeader(http.StatusNoContent)
+		case "GET /v1/machines/restricted":
+			fmt.Fprint(w, `{"state":"started","ready":true}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("SMOL_CLOUD_URL", server.URL)
+	instance, err := New(map[string]string{"image": "alpine", "network": "allowCidrs", "allow-cidrs": "192.0.2.0/24", "allow-hosts": "example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Start(context.Background(), "queue"); err != nil {
+		t.Fatal(err)
+	}
+	if !instance.(*provider).sameNetwork(policy) {
+		t.Fatalf("allowlist omitted from create: %+v", policy)
 	}
 }
