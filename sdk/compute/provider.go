@@ -84,5 +84,6 @@ const (
 	ProviderTypeDaytona          ProviderType = "daytona"
 	ProviderTypeE2B              ProviderType = "e2b"
 	ProviderTypeModal            ProviderType = "modal"
+	ProviderTypeSmolCloud        ProviderType = "smol-cloud"
 	ProviderTypeGKEAgentSandbox  ProviderType = "gke-agent-sandbox"
 )
