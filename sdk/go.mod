@@ -3,7 +3,9 @@ module github.com/temporal-community/sandbox-orchestration-harness/sdk
 go 1.26.2
 
 require (
-	connectrpc.com/connect v1.19.2
+	buf.build/gen/go/coreweave/sandbox/connectrpc/go v1.21.0-20261015202918-7074ae5be483.1
+	buf.build/gen/go/coreweave/sandbox/protocolbuffers/go v1.36.12-20261015202918-7074ae5be483.2
+	connectrpc.com/connect v1.21.0
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.22.0
@@ -12,14 +14,17 @@ require (
 	github.com/e2b-dev/infra/packages/shared v0.0.0-20260427142859-74ceb52ae040
 	github.com/google/uuid v1.6.0
 	github.com/modal-labs/modal-client/go v0.7.4
+	github.com/stretchr/testify v1.11.1
 	go.temporal.io/api v1.62.9
 	go.temporal.io/sdk v1.42.0
+	google.golang.org/protobuf v1.36.12
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
 	sigs.k8s.io/agent-sandbox v0.4.6
 )
 
 require (
+	buf.build/gen/go/gnostic/gnostic/protocolbuffers/go v1.36.12-20230414000709-087bc8072ce4.2 // indirect
 	github.com/aristanetworks/gomap v0.0.0-20230726210543-f4e41046dced // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.9 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15 // indirect
@@ -80,7 +85,6 @@ require (
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/otelzap v0.14.0 // indirect
@@ -111,7 +115,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260622175928-b703f567277d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260622175928-b703f567277d // indirect
 	google.golang.org/grpc v1.81.1 // indirect
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

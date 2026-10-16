@@ -120,11 +120,12 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Six providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Seven providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
 | Crafting | `compute.ProviderTypeCrafting` | `sdk/compute/crafting` |
+| CoreWeave Sandboxes | `compute.ProviderTypeCoreWeaveSandbox` | `sdk/compute/cwsandbox` |
 | E2B | `compute.ProviderTypeE2B` | `sdk/compute/e2b` |
 | Daytona | `compute.ProviderTypeDaytona` | `sdk/compute/daytona` |
 | AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
@@ -136,13 +137,16 @@ Six providers are included. All implement `compute.Provider` and self-register v
 | Provider | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
 |----------|:-----:|:----:|:-------:|:------:|:--------------:|:--------:|:-----------------:|
 | Crafting | ✓ | ✓ | ✓ | ✓ | ✓ | ✓‡ | ✓‡ |
+| CoreWeave Sandboxes | ✓ | ✓ | | | ✓ | ✓§ | ✓§ |
 | E2B | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
 | GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
 
-Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
+Providers without native Suspend/Resume (Modal, GKE, CoreWeave) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
+
+§ CoreWeave snapshots require `workspace-path` and capture only that scratch volume. Suspend/resume restarts the entrypoint in a new sandbox with the restored workspace; process memory and files outside the volume are not preserved.
 
 ‡ Crafting snapshots are composite: the workspace home directory, the data of each dependency named in `dependencies`, and optionally the workspace root filesystem, recorded under one opaque snapshot ID. Work must live under `$HOME` to be captured unless `snapshot-base` is enabled. Forks are fully independent in both files and data.
 
@@ -180,6 +184,13 @@ To run the `database-fork` example against it:
 export SANDBOX_PROVIDER=crafting
 export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","dependencies":"db"}'
 ```
+
+**CoreWeave Sandboxes** — `compute.ProviderTypeCoreWeaveSandbox`
+
+Import `sdk/compute/cwsandbox` and set `CWSANDBOX_API_KEY`. Supports serverless
+and own-cluster CKS placement through the public v1 API, with optional workspace
+snapshots for suspend/resume and forks. See the [provider guide](sdk/compute/cwsandbox/README.md)
+for configuration and a runnable smoke test.
 
 **E2B** — `compute.ProviderTypeE2B`
 
@@ -290,6 +301,7 @@ sdk/
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
     crafting/             # Crafting provider + reference sandbox template
+    cwsandbox/            # CoreWeave Sandboxes v1 provider
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
     modal/provider.go     # Modal provider
