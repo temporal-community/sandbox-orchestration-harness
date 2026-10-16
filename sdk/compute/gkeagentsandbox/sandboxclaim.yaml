@@ -1,0 +1,50 @@
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: python-runtime-template
+  namespace: pod-snapshots-ns
+spec:
+  envVarsInjectionPolicy: Disallowed
+  networkPolicyManagement: Managed
+  podTemplate:
+    metadata:
+      labels:
+        app: agent-sandbox-workload
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.1.0
+        name: python-runtime
+        ports:
+        - containerPort: 8888
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8888
+          initialDelaySeconds: 0
+          periodSeconds: 1
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      restartPolicy: OnFailure
+      runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+      serviceAccountName: pod-snapshot-sa
+      tolerations:
+      - effect: NoSchedule
+        key: sandbox.gke.io/runtime
+        value: gvisor
+  service: true
+

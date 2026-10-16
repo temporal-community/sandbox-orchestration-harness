@@ -1,0 +1,10 @@
+apiVersion: podsnapshot.gke.io/v1
+kind: PodSnapshotStorageConfig
+metadata:
+  name: cpu-pssc-gcs
+spec:
+  snapshotStorageConfig:
+    gcs:
+      bucket: agent-sandbox-snapshots-sandbox
+      path: my-snapshots
+      tokenSource: podKSA

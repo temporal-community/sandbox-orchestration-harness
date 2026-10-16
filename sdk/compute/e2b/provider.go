@@ -73,7 +73,7 @@ type sandboxCreateRequest struct {
 	EnvVars    map[string]string              `json:"env_vars,omitempty"`
 	Timeout    int32                          `json:"timeout,omitempty"`
 	AutoPause  bool                           `json:"auto_pause"`
-	AutoResume sandboxCreateRequestAutoResume `json:"auto_resume,omitempty"`
+	AutoResume sandboxCreateRequestAutoResume `json:"auto_resume"`
 }
 
 type sandboxCreateResponse struct {

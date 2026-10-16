@@ -81,6 +81,7 @@ type (
 const (
 	ProviderTypeAgentCoreRuntime ProviderType = "aws-agentcore-runtime"
 	ProviderTypeCoreWeaveSandbox ProviderType = "coreweave-sandbox"
+	ProviderTypeCrafting         ProviderType = "crafting"
 	ProviderTypeDaytona          ProviderType = "daytona"
 	ProviderTypeE2B              ProviderType = "e2b"
 	ProviderTypeModal            ProviderType = "modal"

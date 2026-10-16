@@ -4,97 +4,49 @@ package cwsandbox
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"strconv"
-	"strings"
+	"time"
 
-	"buf.build/gen/go/coreweave/sandbox/connectrpc/go/coreweave/sandbox/v1beta2/sandboxv1beta2connect"
-	sandboxv1beta2 "buf.build/gen/go/coreweave/sandbox/protocolbuffers/go/coreweave/sandbox/v1beta2"
+	"buf.build/gen/go/coreweave/sandbox/connectrpc/go/coreweave/sandbox/v1/sandboxv1connect"
+	sandboxv1 "buf.build/gen/go/coreweave/sandbox/protocolbuffers/go/coreweave/sandbox/v1"
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
+	"go.temporal.io/sdk/activity"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
+)
+
+const (
+	defaultBaseURL   = "https://api.cwsandbox.com"
+	taskQueueEnvKey  = "TEMPORAL_TASK_QUEUE"
+	workspaceVolume  = "workspace"
+	operationTimeout = 5 * time.Minute
 )
 
 func init() {
 	compute.Register(compute.ProviderTypeCoreWeaveSandbox, newCoreWeaveSandboxProvider)
 }
 
-const (
-	defaultBaseURL  = "https://api.cwsandbox.com"
-	apiTokenEnvVar  = "CWSANDBOX_API_TOKEN"
-	taskQueueEnvKey = "TEMPORAL_TASK_QUEUE"
-)
-
 type cwSandboxProvider struct {
-	client             sandboxv1beta2connect.GatewayServiceClient
-	containerImage     string
-	command            []string
-	args               []string
-	profileNames       []string
-	maxLifetimeSeconds int32
-	token              string
+	client       sandboxv1connect.SandboxServiceClient
+	spec         *sandboxv1.SandboxSpec
+	token        string
+	pollInterval time.Duration
 }
 
+var _ compute.Provider = (*cwSandboxProvider)(nil)
+
 func newCoreWeaveSandboxProvider(config map[string]string) (compute.Provider, error) {
-	token := os.Getenv(apiTokenEnvVar)
-	if token == "" {
-		return nil, fmt.Errorf("cwsandbox: %s env var required", apiTokenEnvVar)
+	spec, token, baseURL, err := parseConfig(config)
+	if err != nil {
+		return nil, err
 	}
-
-	containerImage := config["container-image"]
-	if containerImage == "" {
-		return nil, fmt.Errorf("cwsandbox: container-image required")
-	}
-
-	rawCommand := config["command"]
-	if rawCommand == "" {
-		return nil, fmt.Errorf("cwsandbox: command required")
-	}
-	command := splitArgs(rawCommand)
-
-	var args []string
-	if rawArgs := config["args"]; rawArgs != "" {
-		args = splitArgs(rawArgs)
-	}
-
-	var profileNames []string
-	if raw := config["profile-names"]; raw != "" {
-		for _, p := range strings.Split(raw, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				profileNames = append(profileNames, p)
-			}
-		}
-	}
-
-	var maxLifetime int32
-	if raw := config["max-lifetime-seconds"]; raw != "" {
-		v, err := strconv.ParseInt(raw, 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("cwsandbox: invalid max-lifetime-seconds: %w", err)
-		}
-		maxLifetime = int32(v)
-	}
-
-	baseURL := config["base-url"]
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
-
-	client := sandboxv1beta2connect.NewGatewayServiceClient(http.DefaultClient, baseURL)
-
 	return &cwSandboxProvider{
-		client:             client,
-		containerImage:     containerImage,
-		command:            command,
-		args:               args,
-		profileNames:       profileNames,
-		maxLifetimeSeconds: maxLifetime,
-		token:              token,
+		client: sandboxv1connect.NewSandboxServiceClient(http.DefaultClient, baseURL),
+		spec:   spec, token: token, pollInterval: time.Second,
 	}, nil
 }
 
@@ -104,105 +56,164 @@ func newAuthedRequest[T any](token string, msg *T) *connect.Request[T] {
 	return req
 }
 
-func (p *cwSandboxProvider) Start(ctx context.Context, taskQueueName string) (*compute.ProviderStatus, error) {
-	req := newAuthedRequest(p.token, &sandboxv1beta2.StartSandboxRequest{
-		ContainerImage: p.containerImage,
-		Command:        p.command[0],
-		Args:           append(append([]string{}, p.command[1:]...), p.args...),
-		EnvironmentVariables: map[string]string{
-			taskQueueEnvKey: taskQueueName,
-		},
-		ProfileNames:       p.profileNames,
-		MaxLifetimeSeconds: p.maxLifetimeSeconds,
-	})
-
-	resp, err := p.client.Start(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("cwsandbox: Start: %w", err)
+// Reuse the same token across Temporal retries, but not across distinct starts
+// or snapshots. A provider can also be called outside a Temporal activity.
+func requestID(ctx context.Context) string {
+	if activity.IsActivity(ctx) {
+		info := activity.GetInfo(ctx)
+		seed := fmt.Sprintf("%q/%q/%q/%q", info.WorkflowNamespace, info.WorkflowExecution.ID, info.WorkflowExecution.RunID, info.ActivityID)
+		return uuid.NewSHA1(uuid.NameSpaceURL, []byte(seed)).String()
 	}
-	return &compute.ProviderStatus{InstanceID: resp.Msg.GetSandboxId()}, nil
+	return uuid.NewString()
+}
+
+func (p *cwSandboxProvider) Start(ctx context.Context, taskQueueName string) (*compute.ProviderStatus, error) {
+	return p.start(ctx, taskQueueName, "")
+}
+
+func (p *cwSandboxProvider) start(ctx context.Context, taskQueueName, snapshotID string) (*compute.ProviderStatus, error) {
+	if taskQueueName == "" {
+		return nil, fmt.Errorf("cwsandbox: task queue required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	spec := proto.Clone(p.spec).(*sandboxv1.SandboxSpec)
+	spec.Containers[0].EnvironmentVariables = map[string]string{taskQueueEnvKey: taskQueueName}
+	if snapshotID != "" {
+		spec.Volumes[0].GetScratch().RestoreFromSnapshotId = snapshotID
+	}
+	resp, err := p.client.CreateSandbox(ctx, newAuthedRequest(p.token, &sandboxv1.CreateSandboxRequest{
+		Sandbox: &sandboxv1.Sandbox{Spec: spec}, RequestId: requestID(ctx),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("cwsandbox: CreateSandbox: %w", err)
+	}
+	sb := resp.Msg
+	id := sb.GetSandboxId()
+	if id == "" {
+		return nil, fmt.Errorf("cwsandbox: CreateSandbox returned no sandbox ID")
+	}
+	for {
+		switch sb.GetStatus().GetState() {
+		case sandboxv1.State_STATE_RUNNING:
+			return &compute.ProviderStatus{InstanceID: id}, nil
+		case sandboxv1.State_STATE_CREATING, sandboxv1.State_STATE_PREPARING:
+			// Creation is asynchronous; exec is only available after RUNNING.
+		default:
+			return nil, fmt.Errorf("cwsandbox: sandbox %s entered %s: %s", id, sb.GetStatus().GetState(), sb.GetStatus().GetStateReason())
+		}
+		if err := p.wait(ctx); err != nil {
+			return nil, fmt.Errorf("cwsandbox: waiting for sandbox %s: %w", id, err)
+		}
+		resp, err = p.client.GetSandbox(ctx, newAuthedRequest(p.token, &sandboxv1.GetSandboxRequest{SandboxId: id}))
+		if err != nil {
+			return nil, fmt.Errorf("cwsandbox: GetSandbox %s: %w", id, err)
+		}
+		sb = resp.Msg
+	}
 }
 
 func (p *cwSandboxProvider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
-	req := newAuthedRequest(p.token, &sandboxv1beta2.DeleteSandboxRequest{
-		SandboxId: status.InstanceID,
-	})
-	if _, err := p.client.Delete(ctx, req); err != nil {
-		if isNotFound(err) {
-			return nil
+	_, err := p.client.DeleteSandbox(ctx, newAuthedRequest(p.token, &sandboxv1.DeleteSandboxRequest{SandboxId: status.InstanceID}))
+	if err != nil && connect.CodeOf(err) != connect.CodeNotFound {
+		return fmt.Errorf("cwsandbox: DeleteSandbox: %w", err)
+	}
+	return nil
+}
+
+// v1 has no in-place pause/resume. The harness handles suspension through
+// Snapshot, Stop, and StartFromSnapshot when a workspace is configured.
+func (p *cwSandboxProvider) Suspend(context.Context, *compute.ProviderStatus) error {
+	return fmt.Errorf("cwsandbox: Suspend: %w", errors.ErrUnsupported)
+}
+
+func (p *cwSandboxProvider) Resume(context.Context, *compute.ProviderStatus) error {
+	return fmt.Errorf("cwsandbox: Resume: %w", errors.ErrUnsupported)
+}
+
+func (p *cwSandboxProvider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
+	snapshot, err := p.snapshot(ctx, status)
+	// Filesystem snapshots leave the source running, including on failure.
+	return compute.SandboxPostSnapshotRunning, snapshot, err
+}
+
+func (p *cwSandboxProvider) snapshot(ctx context.Context, status *compute.ProviderStatus) (*compute.ProviderSnapshot, error) {
+	if len(p.spec.Volumes) == 0 {
+		return nil, fmt.Errorf("cwsandbox: Snapshot requires workspace-path: %w", errors.ErrUnsupported)
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	resp, err := p.client.CreateFileSystemSnapshot(ctx, newAuthedRequest(p.token, &sandboxv1.CreateFileSystemSnapshotRequest{
+		SandboxId: status.InstanceID, ScratchVolumeName: workspaceVolume, RequestId: requestID(ctx),
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("cwsandbox: CreateFileSystemSnapshot: %w", err)
+	}
+	snapshot := resp.Msg
+	id := snapshot.GetFileSystemSnapshotId()
+	if id == "" {
+		return nil, fmt.Errorf("cwsandbox: CreateFileSystemSnapshot returned no snapshot ID")
+	}
+	for {
+		switch snapshot.GetState() {
+		case sandboxv1.SnapshotState_SNAPSHOT_STATE_READY:
+			return &compute.ProviderSnapshot{SnapshotID: id}, nil
+		case sandboxv1.SnapshotState_SNAPSHOT_STATE_CREATING:
+		default:
+			return nil, fmt.Errorf("cwsandbox: snapshot %s entered %s: %s", id, snapshot.GetState(), snapshot.GetStateReason())
 		}
-		return fmt.Errorf("cwsandbox: Delete: %w", err)
+		if err := p.wait(ctx); err != nil {
+			return nil, fmt.Errorf("cwsandbox: waiting for snapshot %s: %w", id, err)
+		}
+		resp, err = p.client.GetFileSystemSnapshot(ctx, newAuthedRequest(p.token, &sandboxv1.GetFileSystemSnapshotRequest{FileSystemSnapshotId: id}))
+		if err != nil {
+			return nil, fmt.Errorf("cwsandbox: GetFileSystemSnapshot %s: %w", id, err)
+		}
+		snapshot = resp.Msg
+	}
+}
+
+func (p *cwSandboxProvider) StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
+	if len(p.spec.Volumes) == 0 {
+		return nil, fmt.Errorf("cwsandbox: StartFromSnapshot requires workspace-path: %w", errors.ErrUnsupported)
+	}
+	if snapshot == nil || snapshot.SnapshotID == "" {
+		return nil, fmt.Errorf("cwsandbox: snapshot ID required")
+	}
+	return p.start(ctx, taskQueueName, snapshot.SnapshotID)
+}
+
+func (p *cwSandboxProvider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) error {
+	_, err := p.client.DeleteFileSystemSnapshot(ctx, newAuthedRequest(p.token, &sandboxv1.DeleteFileSystemSnapshotRequest{
+		FileSystemSnapshotId: snapshot.SnapshotID, AllowMissing: true,
+	}))
+	if err != nil && connect.CodeOf(err) != connect.CodeNotFound {
+		return fmt.Errorf("cwsandbox: DeleteFileSystemSnapshot: %w", err)
 	}
 	return nil
-}
-
-func (p *cwSandboxProvider) Suspend(ctx context.Context, status *compute.ProviderStatus) error {
-	req := newAuthedRequest(p.token, &sandboxv1beta2.PauseSandboxRequest{
-		SandboxId: status.InstanceID,
-	})
-	if _, err := p.client.Pause(ctx, req); err != nil {
-		return fmt.Errorf("cwsandbox: Pause: %w", err)
-	}
-	return nil
-}
-
-func (p *cwSandboxProvider) Resume(ctx context.Context, status *compute.ProviderStatus) error {
-	req := newAuthedRequest(p.token, &sandboxv1beta2.ResumeSandboxRequest{
-		SandboxId: status.InstanceID,
-	})
-	if _, err := p.client.Resume(ctx, req); err != nil {
-		return fmt.Errorf("cwsandbox: Resume: %w", err)
-	}
-	return nil
-}
-
-func (p *cwSandboxProvider) Snapshot(_ context.Context, _ *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
-	return compute.SandboxPostSnapshotRunning, nil, fmt.Errorf("cwsandbox: Snapshot: %w", errors.ErrUnsupported)
-}
-
-func (p *cwSandboxProvider) StartFromSnapshot(_ context.Context, _ string, _ *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
-	return nil, fmt.Errorf("cwsandbox: StartFromSnapshot: %w", errors.ErrUnsupported)
-}
-
-func (p *cwSandboxProvider) DeleteSnapshot(_ context.Context, _ *compute.ProviderSnapshot) error {
-	return fmt.Errorf("cwsandbox: DeleteSnapshot: %w", errors.ErrUnsupported)
 }
 
 func (p *cwSandboxProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
-	req := newAuthedRequest(p.token, &sandboxv1beta2.ExecSandboxRequest{
-		SandboxId: status.InstanceID,
-		Command:   []string{"sh", "-c", cmd},
-	})
-	resp, err := p.client.Exec(ctx, req)
+	resp, err := p.client.Exec(ctx, newAuthedRequest(p.token, &sandboxv1.ExecRequest{
+		SandboxId: status.InstanceID, Command: []string{"sh", "-c", cmd},
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("cwsandbox: Exec: %w", err)
 	}
-	result := resp.Msg.GetResult()
-	return &compute.CommandResult{
-		Stdout:   string(result.GetStdout()),
-		Stderr:   string(result.GetStderr()),
-		ExitCode: result.GetExitCode(),
-	}, nil
-}
-
-func isNotFound(err error) bool {
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
-		return connectErr.Code() == connect.CodeNotFound
+	result := resp.Msg
+	if result.GetStdoutTruncated() || result.GetStderrTruncated() {
+		return nil, fmt.Errorf("cwsandbox: Exec output truncated (stdout=%t, stderr=%t)", result.GetStdoutTruncated(), result.GetStderrTruncated())
 	}
-	return false
+	return &compute.CommandResult{Stdout: string(result.GetStdout()), Stderr: string(result.GetStderr()), ExitCode: result.GetExitCode()}, nil
 }
 
-func splitArgs(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+func (p *cwSandboxProvider) wait(ctx context.Context) error {
+	timer := time.NewTimer(p.pollInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 		return nil
 	}
-	if strings.HasPrefix(raw, "[") {
-		var parsed []string
-		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
-			return parsed
-		}
-	}
-	return strings.Fields(raw)
 }

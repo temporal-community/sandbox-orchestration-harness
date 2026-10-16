@@ -271,7 +271,7 @@ func NewSandbox(ctx workflow.Context, sandboxProvider Provider, opts ...SandboxO
 		return nil, fmt.Errorf("sandbox: WithIdleTimeout: duration must be non-negative or NoIdleTimeout, got %v", cfg.idleTimeout)
 	}
 
-	encodedSandboxId := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} { return uuid.New().String() })
+	encodedSandboxId := workflow.SideEffect(ctx, func(ctx workflow.Context) any { return uuid.New().String() })
 	var sandboxID string
 	if err := encodedSandboxId.Get(&sandboxID); err != nil {
 		return nil, fmt.Errorf("sandbox: get side-effect sandbox ID: %w", err)

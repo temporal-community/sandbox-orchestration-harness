@@ -1,0 +1,14 @@
+apiVersion: podsnapshot.gke.io/v1
+kind: PodSnapshotPolicy
+metadata:
+  name: cpu-psp
+  namespace: pod-snapshots-ns
+spec:
+  selector:
+    matchLabels:
+      app: agent-sandbox-workload
+  snapshotScope: whole-pod
+  storageConfigName: cpu-pssc-gcs
+  triggerConfig:
+    postCheckpoint: resume
+    type: manual
