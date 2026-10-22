@@ -1,2 +1,4 @@
 examples/*/starter
 examples/*/worker
+examples/nexus-agent/.venv/
+__pycache__/

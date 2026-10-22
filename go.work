@@ -1,5 +1,9 @@
 go 1.26.2
 
+// Example modules refer to an upstream revision that is no longer available.
+// Keep their dependency graph local as well as their package resolution.
+replace github.com/temporal-community/sandbox-orchestration-harness/sdk v0.0.0-20260429215919-411712afdaf5 => ./sdk
+
 use (
 	./examples/auto-suspend
 	./examples/database-fork
