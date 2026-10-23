@@ -9,7 +9,6 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	example "github.com/temporal-community/sandbox-orchestration-harness/examples/file-management"
-	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
 )
 
 func main() {
@@ -31,8 +30,9 @@ func main() {
 
 	w := worker.New(c, example.TaskQueue, worker.Options{})
 
+	// Only the example workflow is registered here. SandboxWorkflow and the
+	// sandbox activities run on the separate sandbox worker.
 	w.RegisterWorkflow(example.FileOpsWorkflow)
-	sandbox.Register(w, c)
 
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker exited with error: %v", err)

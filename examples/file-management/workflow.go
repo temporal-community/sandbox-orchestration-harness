@@ -46,12 +46,14 @@ func FileOpsWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		StartToCloseTimeout: 30 * time.Second,
 	})
 
+	// The sandbox runs on a dedicated sandbox worker (sdk/cmd/sandbox-worker), so
+	// this example's own worker needs no compute-provider credentials.
 	sbx, err := sandbox.NewSandbox(ctx, sandbox.Provider{
 		Type: compute.ProviderTypeModal,
 		Config: map[string]string{
 			"image": "ubuntu:26.04",
 		},
-	})
+	}, sandbox.WithTaskQueue(sandbox.DefaultSandboxTaskQueue))
 	if err != nil {
 		return WorkflowResult{}, err
 	}

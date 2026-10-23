@@ -1,15 +1,19 @@
 ############################# Main targets #############################
 # Rebuild binaries (used by Dockerfile).
-bins: examples-auto-suspend-starter examples-auto-suspend-worker examples-detached-sandbox-starter examples-detached-sandbox-worker examples-explicit-suspend-resume-starter examples-explicit-suspend-resume-worker examples-file-management-starter examples-file-management-worker examples-shared-sandbox-starter examples-shared-sandbox-worker examples-snapshot-fork-starter examples-snapshot-fork-worker
+bins: examples-auto-suspend-starter examples-auto-suspend-worker examples-detached-sandbox-starter examples-detached-sandbox-worker examples-explicit-suspend-resume-starter examples-explicit-suspend-resume-worker examples-file-management-starter examples-file-management-worker examples-shared-sandbox-starter examples-shared-sandbox-worker examples-snapshot-fork-starter examples-snapshot-fork-worker sdk-sandbox-worker
 
 # Install all tools, run all possible checks and tests (long but comprehensive).
 all: clean bins
+
+# Run the SDK test suite.
+test:
+	cd sdk && go test ./...
 
 # Delete all build artifacts
 clean: clean-bins
 ########################################################################
 
-.PHONY: bins clean sandbox-worker-ecs
+.PHONY: bins test clean sandbox-worker-ecs
 
 ##### Variables ######
 
@@ -34,6 +38,7 @@ clean-bins:
 	@rm -f examples/shared-sandbox/worker
 	@rm -f examples/snapshot-fork/starter
 	@rm -f examples/snapshot-fork/worker
+	@rm -f sdk/sandbox-worker
 
 examples-auto-suspend-starter: $(ALL_SRC)
 	@printf $(COLOR) "Build examples-auto-suspend-starter with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
@@ -82,3 +87,7 @@ examples-snapshot-fork-starter: $(ALL_SRC)
 examples-snapshot-fork-worker: $(ALL_SRC)
 	@printf $(COLOR) "Build examples-snapshot-fork-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
 	cd examples/snapshot-fork && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o worker ./cmd/worker
+
+sdk-sandbox-worker: $(ALL_SRC)
+	@printf $(COLOR) "Build sdk-sandbox-worker with CGO_ENABLED=$(CGO_ENABLED) for $(GOOS)/$(GOARCH)..."
+	cd sdk && CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_TAG_FLAG) -o sandbox-worker ./cmd/sandbox-worker
