@@ -1,13 +1,13 @@
-# Legacy replay fixtures
+# Baseline replay fixtures
 
-`legacy-parent.json` and `legacy-controller.json` are complete histories captured from a local Temporal development server (1.32.0) with Go SDK 1.42.0. The production source was unchanged at harness revision `24f09129335f8057750f09f84a45b9c76c99d9c1`. Only `history_test.go` was added to that checkout to run the capture. The fake provider allocates no compute and uses synthetic client and Worker identities.
+`baseline-parent.json` and `baseline-controller.json` are complete histories captured from a local Temporal development server (1.32.0) with Go SDK 1.42.0. The production source was unchanged at harness revision `24f09129335f8057750f09f84a45b9c76c99d9c1`. Only `history_test.go` was added to that checkout to run the capture. The fake provider allocates no compute and uses synthetic client and Worker identities. These fixtures record existing behavior at that revision, not a deprecated execution mode.
 
-The parent calls `NewSandbox`, runs one command, and stops the owned controller. The controller history retains `StartSandbox`, `ExecuteCommand`, and `StopSandbox`. The parent history retains the SDK bridge Activities and SideEffect markers. Sticky task queue names are replaced with `synthetic-dev-server` to remove the local host name. No command, input, event order, or result is changed. `TestRetainedLegacyReplay` replays both histories against the current implementation without a server.
+The parent calls `NewSandbox`, runs one command, and stops the owned controller. The controller history retains `StartSandbox`, `ExecuteCommand`, and `StopSandbox`. The parent history retains the SDK bridge Activities and SideEffect markers. Sticky task queue names are replaced with `synthetic-dev-server` to remove the local host name. No command, input, event order, or result is changed. `TestRetainedBaselineReplay` replays both histories against the current implementation without a server. The recorded `legacyHistoryWorkflow` type name stays unchanged so replay uses the original Workflow registration.
 
 To capture another baseline, start a local server at `127.0.0.1:17293` and run the following command from that baseline's `sdk` directory with the capture test present. Set `HARNESS_HISTORY_CAPTURE` to an existing output directory. Keep the original fixtures when checking a new implementation.
 
 ```sh
-GOWORK=off HARNESS_HISTORY_CAPTURE=<output-directory> go test -run '^TestCaptureLegacyHistory$' -count=1 -v .
+GOWORK=off HARNESS_HISTORY_CAPTURE=<output-directory> go test -run '^TestCaptureBaselineHistory$' -count=1 -v .
 ```
 
 Local verification uses the Temporal CLI development server (1.32.0), without Docker or cloud resources. With the Temporal CLI installed, run this command in a separate terminal and wait for the server to report that it has started:
