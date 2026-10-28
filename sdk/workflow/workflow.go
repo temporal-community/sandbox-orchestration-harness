@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
@@ -22,6 +23,7 @@ const (
 
 type sandboxWorkflow struct {
 	state           SandboxLocalState
+	policy          compute.ExecutionPolicy
 	lifecycle       sandboxLifecycle
 	cancelRequested bool
 	cancelIdleTimer func() // cancels the in-flight idle timer; nil if none
@@ -167,10 +169,23 @@ func (s *sandboxWorkflow) validateInit(inp SandboxInitInput) error {
 	if !compute.IsRegistered(inp.ComputeProvider.Type) {
 		return temporal.NewApplicationError("Unknown compute provider type", "InvalidArgument")
 	}
-	return nil
+	policy, err := compute.ResolvePolicy(inp.ComputeProvider)
+	if err != nil {
+		return wrapProviderConfig(err)
+	}
+	return wrapUnsupported(policy.ValidateInitial(inp.IdleTimeout, inp.Snapshot))
 }
 
 func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput) error {
+	policy, err := compute.ResolvePolicy(inp.ComputeProvider)
+	if err != nil {
+		return wrapProviderConfig(err)
+	}
+	if err := policy.ValidateInitial(inp.IdleTimeout, inp.Snapshot); err != nil {
+		return wrapUnsupported(err)
+	}
+	s.policy = policy
+	inp.ComputeProvider.Config = maps.Clone(inp.ComputeProvider.Config)
 	if inp.Snapshot != nil {
 		var out StartSandboxFromSnapshotOutput
 		if err := workflow.ExecuteActivity(
@@ -218,10 +233,16 @@ func (s *sandboxWorkflow) validateExecuteCommand(inp SandboxExecuteCommandInput)
 	if s.lifecycle == sandboxSuspended && inp.DisableAutoResume {
 		return temporal.NewApplicationError("sandbox is suspended", "Suspended")
 	}
+	if s.lifecycle == sandboxSuspended {
+		return wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume))
+	}
 	return nil
 }
 
 func (s *sandboxWorkflow) handleExecuteCommand(ctx workflow.Context, inp SandboxExecuteCommandInput) (*compute.CommandResult, error) {
+	if err := s.validateExecuteCommand(inp); err != nil {
+		return nil, err
+	}
 	// Cancel any in-flight idle timer from the previous command.
 	s.cancelIdleTimerIfActive()
 
@@ -275,10 +296,13 @@ func (s *sandboxWorkflow) validateSuspend(_ struct{}) error {
 	if s.lifecycle == sandboxSuspended {
 		return temporal.NewApplicationError("sandbox already suspended", "AlreadySuspended")
 	}
-	return nil
+	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationSuspend))
 }
 
 func (s *sandboxWorkflow) handleSuspend(ctx workflow.Context, _ struct{}) error {
+	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationSuspend)); err != nil {
+		return err
+	}
 	s.cancelIdleTimerIfActive()
 
 	if s.state.Status == nil {
@@ -349,10 +373,13 @@ func (s *sandboxWorkflow) validateSnapshot(_ struct{}) error {
 	if s.lifecycle == sandboxSuspended {
 		return temporal.NewApplicationError("sandbox is currently suspended", "InvalidSandboxState")
 	}
-	return nil
+	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationSnapshot))
 }
 
 func (s *sandboxWorkflow) handleSnapshot(ctx workflow.Context, _ struct{}) (*compute.ProviderSnapshot, error) {
+	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationSnapshot)); err != nil {
+		return nil, err
+	}
 	var out SnapshotSandboxOutput
 	if err := workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: snapshotSandboxTimeout}),
@@ -396,10 +423,13 @@ func (s *sandboxWorkflow) validateDeleteSnapshot(snapshot *compute.ProviderSnaps
 	if s.state.ComputeProvider == nil {
 		return temporal.NewNonRetryableApplicationError("invalid sandbox state", "InvalidSandboxState", nil)
 	}
-	return nil
+	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationDeleteSnapshot))
 }
 
 func (s *sandboxWorkflow) handleDeleteSnapshot(ctx workflow.Context, snapshot *compute.ProviderSnapshot) error {
+	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationDeleteSnapshot)); err != nil {
+		return err
+	}
 	if s.suspendSnapshot != nil && snapshot != nil && s.suspendSnapshot.SnapshotID == snapshot.SnapshotID {
 		return temporal.NewApplicationError("snapshot is currently in use by this sandbox", "SnapshotInUse")
 	}
@@ -421,10 +451,13 @@ func (s *sandboxWorkflow) validateResume(_ struct{}) error {
 	if s.lifecycle != sandboxSuspended {
 		return temporal.NewApplicationError("sandbox not suspended", "NotSuspended")
 	}
-	return nil
+	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume))
 }
 
 func (s *sandboxWorkflow) handleResume(ctx workflow.Context, _ struct{}) error {
+	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume)); err != nil {
+		return err
+	}
 	if s.suspendSnapshot != nil {
 		var out StartSandboxFromSnapshotOutput
 		if err := workflow.ExecuteActivity(

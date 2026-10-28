@@ -74,9 +74,10 @@ jobs:
           required = {
               "TestLocalNativeProcessHistory/default-idle",
               "TestLocalNativeProcessHistory/no-idle-timeout",
+              "TestLocalNativeProcessHistory/fresh-policy",
               "TestLocalPublicSandboxRejectsInvalidProviderBeforeAllocation",
-              "TestRetainedLegacyReplay/legacy-parent.json",
-              "TestRetainedLegacyReplay/legacy-controller.json",
+              "TestRetainedBaselineReplay/baseline-parent.json",
+              "TestRetainedBaselineReplay/baseline-controller.json",
           }
           package = "github.com/temporal-community/sandbox-orchestration-harness/sdk"
           passed = set()

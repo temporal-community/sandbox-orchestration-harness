@@ -18,7 +18,7 @@ import (
 )
 
 func nativeConfig() map[string]string {
-	return map[string]string{"workload": "native-process", "image": "example/process@sha256:abc", "network": "blocked"}
+	return map[string]string{ConfigKeyWorkload: "native-process", "image": "example/process@sha256:abc", "network": "blocked"}
 }
 
 // nativeEndpoint always replaces both provider credentials and the endpoint.
@@ -183,10 +183,10 @@ func TestNativeProcessConfigurationAdmission(t *testing.T) {
 	}
 	for _, config := range []map[string]string{
 		{"workload": "native-process", "image": "image", "cpus": "2147483647", "memory-mb": "2147483647", "disk-gb": "1099511627776"},
-		{"image": "legacy", "cpus": "1099511627776", "memory-mb": "1099511627776"},
+		{"image": "legacy", "cpus": "2147483647", "memory-mb": "2147483647"},
 	} {
 		if _, err := New(config); err != nil {
-			t.Fatalf("valid wire boundary or legacy integer behavior changed: %v", err)
+			t.Fatalf("valid API integer boundary rejected: %v", err)
 		}
 	}
 }

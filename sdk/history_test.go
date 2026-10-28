@@ -38,6 +38,7 @@ func registerHistoryProvider() {
 	})
 }
 
+// legacyHistoryWorkflow retains the Workflow type name recorded in the baseline histories.
 func legacyHistoryWorkflow(ctx workflow.Context) error {
 	s, err := sandbox.NewSandbox(ctx, sandbox.Provider{Type: "history-fake"}, sandbox.WithIdleTimeout(sandbox.NoIdleTimeout))
 	if err != nil {
@@ -53,9 +54,9 @@ func legacyHistoryWorkflow(ctx workflow.Context) error {
 	return s.Stop(ctx)
 }
 
-func TestRetainedLegacyReplay(t *testing.T) {
+func TestRetainedBaselineReplay(t *testing.T) {
 	registerHistoryProvider()
-	for _, name := range []string{"legacy-parent.json", "legacy-controller.json"} {
+	for _, name := range []string{"baseline-parent.json", "baseline-controller.json"} {
 		t.Run(name, func(t *testing.T) {
 			r := worker.NewWorkflowReplayer()
 			r.RegisterWorkflow(legacyHistoryWorkflow)
@@ -67,9 +68,9 @@ func TestRetainedLegacyReplay(t *testing.T) {
 	}
 }
 
-// TestCaptureLegacyHistory records local server execution with fake compute.
+// TestCaptureBaselineHistory records local server execution with fake compute.
 // HARNESS_HISTORY_CAPTURE selects the output directory for both histories.
-func TestCaptureLegacyHistory(t *testing.T) {
+func TestCaptureBaselineHistory(t *testing.T) {
 	dir := os.Getenv("HARNESS_HISTORY_CAPTURE")
 	if dir == "" {
 		t.Skip("history capture is an explicit local operation")
@@ -107,7 +108,7 @@ func TestCaptureLegacyHistory(t *testing.T) {
 	if childID == "" {
 		t.Fatal("no controller execution")
 	}
-	for name, h := range map[string]*historypb.History{"legacy-parent.json": parent, "legacy-controller.json": readHistory(t, ctx, c, childID, childRun)} {
+	for name, h := range map[string]*historypb.History{"baseline-parent.json": parent, "baseline-controller.json": readHistory(t, ctx, c, childID, childRun)} {
 		data, err := (protojson.MarshalOptions{Indent: "  "}).Marshal(h)
 		if err != nil {
 			t.Fatal(err)

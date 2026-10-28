@@ -24,6 +24,7 @@ import (
 type nativeWorkflowInput struct {
 	Provider    compute.ProviderDetails
 	DisableIdle bool
+	Fresh       bool
 }
 
 func nativeProcessWorkflow(ctx workflow.Context, input nativeWorkflowInput) error {
@@ -46,6 +47,22 @@ func nativeProcessWorkflow(ctx workflow.Context, input nativeWorkflowInput) erro
 	if result.Stdout != "native-process" {
 		return errors.New("native process output was not retained")
 	}
+	if input.Fresh {
+		ref, err := s.Ref()
+		if err != nil {
+			return err
+		}
+		attached, err := sandbox.AttachToSandbox(ref)
+		if err != nil {
+			return err
+		}
+		if _, err := attached.Snapshot(ctx); err == nil {
+			return errors.New("fresh attached snapshot was accepted")
+		}
+		if err := attached.Suspend(ctx); err == nil {
+			return errors.New("fresh attached suspend was accepted")
+		}
+	}
 	ready = true
 	workflow.GetSignalChannel(ctx, "native-finish").Receive(ctx, nil)
 	return s.Stop(ctx)
@@ -67,15 +84,17 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 	if os.Getenv("HARNESS_LOCAL_TEST") != "1" {
 		t.Skip("set HARNESS_LOCAL_TEST=1 for local server conformance")
 	}
-	for _, disableIdle := range []bool{false, true} {
-		name := "default-idle"
-		if disableIdle {
-			name = "no-idle-timeout"
-		}
+	for _, name := range []string{"default-idle", "no-idle-timeout", "fresh-policy"} {
+		disableIdle := name != "default-idle"
 		t.Run(name, func(t *testing.T) {
 			b := &nativeBoundary{LoseFirstReply: true}
 			typ := registerNativeBoundary(b)
 			provider := compute.ProviderDetails{Type: typ, Config: map[string]string{"workload": "printf native-process", "provider-owned-extra": "retained"}}
+			if name == "fresh-policy" {
+				compute.RegisterPolicy(typ, func(map[string]string) (compute.ExecutionPolicy, error) {
+					return compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}, nil
+				})
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := client.Dial(client.Options{HostPort: "127.0.0.1:17293"})
@@ -91,7 +110,7 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer w.Stop()
-			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, nativeProcessWorkflow, nativeWorkflowInput{Provider: provider, DisableIdle: disableIdle})
+			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, nativeProcessWorkflow, nativeWorkflowInput{Provider: provider, DisableIdle: disableIdle, Fresh: name == "fresh-policy"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +202,11 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 			} else if !reflect.DeepEqual(idleTimers, []time.Duration{5 * time.Minute}) {
 				t.Fatalf("default idle timers changed: %v", idleTimers)
 			}
-			if got := scheduledActivityNames(parent); !reflect.DeepEqual(got, []string{"SendSandboxInit", "SendSandboxExecuteCommand"}) {
+			wantParent := []string{"SendSandboxInit", "SendSandboxExecuteCommand"}
+			if name == "fresh-policy" {
+				wantParent = append(wantParent, "SendSandboxSnapshot", "SendSandboxSuspend")
+			}
+			if got := scheduledActivityNames(parent); !reflect.DeepEqual(got, wantParent) {
 				t.Fatalf("parent Activities=%v", got)
 			}
 			if got := scheduledActivityNames(child); !reflect.DeepEqual(got, []string{"StartSandbox", "ExecuteCommand", "StopSandbox"}) {

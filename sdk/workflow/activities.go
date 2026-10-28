@@ -19,6 +19,22 @@ func wrapProviderConfig(err error) error {
 	return temporal.NewNonRetryableApplicationError(err.Error(), "ProviderConfigError", err)
 }
 
+// lookupProvider checks configuration policy before constructing the provider.
+func lookupProvider(details compute.ProviderDetails, operation compute.Operation) (compute.Provider, error) {
+	policy, err := compute.ResolvePolicy(details)
+	if err != nil {
+		return nil, wrapProviderConfig(err)
+	}
+	if err := policy.ValidateOperation(operation); err != nil {
+		return nil, wrapUnsupported(err)
+	}
+	provider, err := compute.Lookup(details.Type, details.Config)
+	if err != nil {
+		return nil, wrapProviderConfig(err)
+	}
+	return provider, nil
+}
+
 type StartSandboxInput struct {
 	Provider      compute.ProviderDetails `json:"provider"`
 	TaskQueueName string                  `json:"task_queue_name"`
@@ -59,9 +75,9 @@ type SuspendSandboxInput struct {
 }
 
 func SuspendSandbox(ctx context.Context, input SuspendSandboxInput) error {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationSuspend)
 	if err != nil {
-		return wrapProviderConfig(err)
+		return err
 	}
 	return wrapUnsupported(provider.Suspend(ctx, input.Status))
 }
@@ -72,9 +88,9 @@ type ResumeSandboxInput struct {
 }
 
 func ResumeSandbox(ctx context.Context, input ResumeSandboxInput) error {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationResume)
 	if err != nil {
-		return wrapProviderConfig(err)
+		return err
 	}
 	return wrapUnsupported(provider.Resume(ctx, input.Status))
 }
@@ -112,9 +128,9 @@ type SnapshotSandboxOutput struct {
 }
 
 func SnapshotSandbox(ctx context.Context, input SnapshotSandboxInput) (SnapshotSandboxOutput, error) {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationSnapshot)
 	if err != nil {
-		return SnapshotSandboxOutput{}, wrapProviderConfig(err)
+		return SnapshotSandboxOutput{}, err
 	}
 	state, snapshot, err := provider.Snapshot(ctx, input.Status)
 	if err != nil {
@@ -134,9 +150,9 @@ type StartSandboxFromSnapshotOutput struct {
 }
 
 func StartSandboxFromSnapshot(ctx context.Context, input StartSandboxFromSnapshotInput) (StartSandboxFromSnapshotOutput, error) {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationRestore)
 	if err != nil {
-		return StartSandboxFromSnapshotOutput{}, wrapProviderConfig(err)
+		return StartSandboxFromSnapshotOutput{}, err
 	}
 	status, err := provider.StartFromSnapshot(ctx, input.TaskQueueName, input.Snapshot)
 	if err != nil {
@@ -151,9 +167,9 @@ type DeleteSnapshotInput struct {
 }
 
 func DeleteSnapshot(ctx context.Context, input DeleteSnapshotInput) error {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationDeleteSnapshot)
 	if err != nil {
-		return wrapProviderConfig(err)
+		return err
 	}
 	return wrapUnsupported(provider.DeleteSnapshot(ctx, input.Snapshot))
 }

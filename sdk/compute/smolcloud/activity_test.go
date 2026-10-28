@@ -1,4 +1,4 @@
-package sandbox_test
+package smolcloud_test
 
 import (
 	"bytes"
@@ -11,12 +11,25 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
-	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/smolcloud"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/smolcloud"
 	controller "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
+
+func startActivityWorkflow(ctx workflow.Context, input controller.StartSandboxInput) (controller.StartSandboxOutput, error) {
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Millisecond, MaximumAttempts: 3},
+	})
+	var output controller.StartSandboxOutput
+	err := workflow.ExecuteActivity(ctx, controller.StartSandbox, input).Get(ctx, &output)
+	return output, err
+}
 
 func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
 	var requests [][]byte
@@ -60,7 +73,7 @@ func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
 	t.Setenv("SMOL_CLOUD_URL", server.URL)
 	t.Setenv("SMOL_CLOUD_TOKEN", "outside-only")
 	input := controller.StartSandboxInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: map[string]string{
-		"workload": "native-process", "image": "example/native@sha256:def", "cpus": "2", "memory-mb": "1024", "disk-gb": "4", "network": "allowCidrs", "allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "registry-z.example,registry-a.example",
+		smolcloud.ConfigKeyWorkload: "native-process", "image": "example/native@sha256:def", "cpus": "2", "memory-mb": "1024", "disk-gb": "4", "network": "allowCidrs", "allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "registry-z.example,registry-a.example",
 	}}, TaskQueueName: "activity-queue"}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
