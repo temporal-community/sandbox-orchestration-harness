@@ -186,6 +186,14 @@ refuses to boot if its network policy does not match the requested policy.
 HTTP API calls run on the Temporal activity worker; the sandbox image does
 not need a Temporal worker.
 
+Set `workload` to `native-process` to run the configured image entrypoint through the existing provider `Start`, with an empty guest environment instead of `TEMPORAL_TASK_QUEUE`. The provider does not copy Worker or Namespace credentials into the request. Package the process and its nonsecret settings in the image; this configuration does not accept command overrides or guest environment keys. Use an immutable image reference when image content must stay fixed. The default empty `workload` preserves the existing requests and behavior. Other workload values are refused.
+
+The native configuration accepts only `workload`, `image`, `cpus`, `memory-mb`, `disk-gb`, `network`, `allow-cidrs` and `allow-hosts`. It creates a nonbranchable machine. The existing queue derived name and harness ownership label remain in use. An additional configuration digest label binds the queue, workload, image reference, resources and network policy. On a create conflict, adoption requires exactly one machine with that name, matching ownership, configuration digest and network policy. Conflicting resources are neither modified nor deleted. A failed native creation is cleaned up when its response identifies the allocated machine, including a partial response that fails decoding. A paused resource is refused rather than resumed, including a pause observed during readiness checks; `StartFromSnapshot` returns `errors.ErrUnsupported` before any API request. Labels provide retry reconciliation within the trusted provider account, not attestation or protection from account administrators. An image tag can change content without changing its reference.
+
+Native CPU and memory values must fit positive `int32` values, as required by the API wire format. Disk values retain the existing host integer range. These checks do not qualify account quotas or live capacity.
+
+This provider configuration is covered by fake HTTP tests only. The live SmolCloud path is unqualified. Controller admission of actual initial idle/snapshot options, restrictions on later lifecycle operations and attached references, and a complete process demo remain pending. Select explicit `compute.NoIdleTimeout` for a native workload; this provider cannot inspect the controller idle option passed elsewhere. Do not treat these provider checks as complete native lifecycle enforcement.
+
 **Crafting** — `compute.ProviderTypeCrafting`
 
 Requires the `cs` CLI on the worker host. A Crafting sandbox is a workspace plus the dependency workloads it talks to, so snapshots are composite: naming `dependencies` captures their data alongside the workspace home, and a fork restores both together.
