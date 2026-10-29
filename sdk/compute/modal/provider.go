@@ -53,7 +53,7 @@ func (p *modalProvider) Start(ctx context.Context, taskQueueName string) (*compu
 }
 
 func (p *modalProvider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
-	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID)
+	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID, nil)
 	if err != nil {
 		var notFound modal.NotFoundError
 		if errors.As(err, &notFound) {
@@ -80,11 +80,11 @@ func (p *modalProvider) Resume(_ context.Context, _ *compute.ProviderStatus) err
 }
 
 func (p *modalProvider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
-	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID)
+	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID, nil)
 	if err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, fmt.Errorf("modal: get sandbox: %w", err)
 	}
-	img, err := sb.SnapshotFilesystem(ctx, 5*time.Minute)
+	img, err := sb.SnapshotFilesystem(ctx, &modal.SandboxSnapshotFilesystemParams{Timeout: 5 * time.Minute})
 	if err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, fmt.Errorf("modal: snapshot filesystem: %w", err)
 	}
@@ -96,7 +96,7 @@ func (p *modalProvider) StartFromSnapshot(ctx context.Context, taskQueueName str
 	if err != nil {
 		return nil, fmt.Errorf("modal: get app: %w", err)
 	}
-	img, err := p.client.Images.FromID(ctx, snapshot.SnapshotID)
+	img, err := p.client.Images.FromID(ctx, snapshot.SnapshotID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modal: get snapshot image: %w", err)
 	}
@@ -121,7 +121,7 @@ func (p *modalProvider) DeleteSnapshot(ctx context.Context, snapshot *compute.Pr
 }
 
 func (p *modalProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
-	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID)
+	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modal: get sandbox: %w", err)
 	}
@@ -137,7 +137,7 @@ func (p *modalProvider) ExecuteCommand(ctx context.Context, status *compute.Prov
 	if err != nil {
 		return nil, fmt.Errorf("modal: read stderr: %w", err)
 	}
-	exitCode, err := proc.Wait(ctx)
+	exitCode, err := proc.Wait(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modal: wait for command: %w", err)
 	}

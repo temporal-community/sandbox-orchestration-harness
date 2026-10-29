@@ -52,9 +52,8 @@ func newGKEAgentSandboxProvider(config map[string]string) (compute.Provider, err
 		namespace = "default"
 	}
 	client, err := sandboxclient.NewClient(context.Background(), sandboxclient.Options{
-		TemplateName: template,
-		Namespace:    namespace,
-		Quiet:        false,
+		Namespace: namespace,
+		Quiet:     false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gke-agent-sandbox: create client: %w", err)
