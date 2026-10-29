@@ -54,9 +54,9 @@ type (
 	// Lifecycle contract:
 	//   - Start must return a ProviderStatus whose InstanceID is sufficient to
 	//     identify the sandbox in all subsequent calls (Stop, Suspend, ExecuteCommand, etc.).
-	//   - taskQueueName passed to Start and StartFromSnapshot is the Temporal task
-	//     queue the provisioned instance should poll; it must be passed to the worker
-	//     process started inside the sandbox.
+	//   - taskQueueName passed to Start and StartFromSnapshot is a stable input that
+	//     providers may use for identity or Temporal Worker routing when configured.
+	//     Provider configuration chooses the workload; Start need not start a Temporal Worker.
 	//   - Suspend, Resume, Snapshot, StartFromSnapshot, and DeleteSnapshot must return
 	//     errors.ErrUnsupported (or wrap it via fmt.Errorf("...: %w", errors.ErrUnsupported))
 	//     when the operation is not supported. The workflow detects this via errors.Is,

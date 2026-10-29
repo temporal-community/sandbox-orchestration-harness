@@ -186,6 +186,28 @@ refuses to boot if its network policy does not match the requested policy.
 HTTP API calls run on the Temporal activity worker; the sandbox image does
 not need a Temporal worker.
 
+Bootstrap, lifecycle policy and branchability have separate configuration keys:
+
+| Key | Values and defaults |
+|-----|---------------------|
+| `bootstrap` | `worker` (default) supplies `TEMPORAL_TASK_QUEUE`; `none` sends an empty guest environment. |
+| `lifecycle` | `standard` (default) retains existing operations; `fresh` permits commands and stop, requires `NoIdleTimeout`, and refuses suspend, resume, snapshots and restore. |
+| `branchable` | `true` by default; `false` disables checkpoint creation and restore. Fresh lifecycle defaults to `false` and rejects explicit `true`. |
+
+Go callers can import `smolcloud` and use `smolcloud.ConfigKeyBootstrap`, `smolcloud.ConfigKeyLifecycle`, `smolcloud.ConfigKeyBranchable` and `smolcloud.ConfigKeyWorkload` as map keys. These constants preserve the spellings above.
+
+Use `bootstrap=none`, `lifecycle=fresh` and `branchable=false` for the first native process configuration. The existing `workload=native-process` selector remains a preset for these settings; contradictory overrides are refused. Other workload values are refused. Omitting these keys preserves the existing requests and operations. Bootstrap alone does not change lifecycle permissions. The provider does not copy Worker or Namespace credentials into guest requests. Package the process and its nonsecret settings in the image; fresh configuration does not accept command overrides or guest environment keys. Use an immutable image reference when image content must stay fixed.
+
+Fresh configuration accepts only the keys above, `workload`, `image`, `cpus`, `memory-mb`, `disk-gb`, `network`, `allow-cidrs` and `allow-hosts`. The existing queue derived name and harness ownership label remain in use. Explicit settings add a configuration digest label that binds queue, effective settings, image reference, resources and network policy. The native preset and its equivalent explicit settings retain the original digest. On a create conflict, adoption requires exactly one machine with that name, matching ownership, configuration digest and network policy. Conflicting resources are neither modified nor deleted. Failed creation with explicit settings is cleaned up when its response identifies the allocated machine, including a partial response that fails decoding. Fresh lifecycle refuses paused adoption, including a pause observed during readiness checks. Labels provide retry reconciliation within the trusted provider account, not attestation or protection from account administrators. An image tag can change content without changing its reference.
+
+CPU and memory values must fit positive `int32` values for every configuration, as required by the API wire format. This rejects oversized values previously accepted by local parsing. Disk values retain the existing positive host integer range. These checks do not qualify account quotas or live capacity.
+
+The SDK and controller validate actual initial idle and snapshot options. The controller retains the resolved lifecycle policy for later updates, including updates from attached references. Receiving Activities and direct provider methods also refuse operations excluded by fresh policy before provider effects. `Start` does not receive controller idle options; direct callers must configure their lifecycle owner correctly. These checks do not authenticate callers or change attachment cleanup ownership.
+
+With standard lifecycle and branchability enabled, restore retains the existing checkpoint behavior. The restore API accepts name and network but no configuration labels or bootstrap override. It cannot change the saved guest environment. Explicit settings therefore refuse conflict adoption if the restored resource lacks matching labels. Fresh lifecycle always refuses restore before HTTP.
+
+Provider behavior is covered by fake HTTP tests. Local Temporal tests cover fresh execution and legacy history replay. Live SmolCloud execution, attachment ownership enforcement and a complete process demo remain unqualified.
+
 **Crafting** — `compute.ProviderTypeCrafting`
 
 Requires the `cs` CLI on the worker host. A Crafting sandbox is a workspace plus the dependency workloads it talks to, so snapshots are composite: naming `dependencies` captures their data alongside the workspace home, and a fork restores both together.

@@ -1,0 +1,105 @@
+name: SDK tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOWORK: "off"
+      HARNESS_LOCAL_TEST: "1"
+      SMOL_CLOUD_LIVE: "0"
+      HARNESS_HISTORY_CAPTURE: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: sdk/go.mod
+          cache-dependency-path: sdk/go.sum
+      - name: Install Temporal CLI
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/temporalio/cli/releases/download/v1.9.1/temporal_cli_1.9.1_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/temporal-cli.tar.gz"
+          printf '%s  %s\n' \
+            09a0326a51db84d02735e53542b9ebd8c4758daf47482a9ab0abce15844e60d5 \
+            "$RUNNER_TEMP/temporal-cli.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/temporal-bin"
+          tar -xzf "$RUNNER_TEMP/temporal-cli.tar.gz" -C "$RUNNER_TEMP/temporal-bin" temporal
+          "$RUNNER_TEMP/temporal-bin/temporal" --version
+      - name: Run SDK tests with a local Temporal server
+        working-directory: sdk
+        shell: bash
+        run: |
+          temporal="$RUNNER_TEMP/temporal-bin/temporal"
+          "$temporal" server start-dev --ip 127.0.0.1 --port 17293 --headless \
+            > "$RUNNER_TEMP/temporal-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in {1..60}; do
+            if "$temporal" --address 127.0.0.1:17293 --command-timeout 2s operator cluster health; then
+              ready=true
+              break
+            fi
+            kill -0 "$server_pid"
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            cat "$RUNNER_TEMP/temporal-server.log"
+            exit 1
+          fi
+          go test -json -count=1 -timeout=5m ./... | tee "$RUNNER_TEMP/sdk-tests.jsonl"
+      - name: Require fresh execution and retained replay
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          required = {
+              "TestLocalNativeProcessHistory/default-idle",
+              "TestLocalNativeProcessHistory/no-idle-timeout",
+              "TestLocalNativeProcessHistory/fresh-policy",
+              "TestLocalPublicSandboxRejectsInvalidProviderBeforeAllocation",
+              "TestRetainedBaselineReplay/baseline-parent.json",
+              "TestRetainedBaselineReplay/baseline-controller.json",
+          }
+          package = "github.com/temporal-community/sandbox-orchestration-harness/sdk"
+          passed = set()
+          for line in (Path(os.environ["RUNNER_TEMP"]) / "sdk-tests.jsonl").read_text().splitlines():
+              event = json.loads(line)
+              if event.get("Package") == package and event.get("Action") == "pass":
+                  passed.add(event.get("Test"))
+          missing = required - passed
+          if missing:
+              raise SystemExit(f"Required tests did not pass: {sorted(missing)}")
+          print("Fresh execution and retained replay passed.")
+          PY
+      - name: Vet SDK
+        working-directory: sdk
+        run: go vet ./...
+      - name: Retain failure logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-test-failure-logs
+          path: |
+            ${{ runner.temp }}/sdk-tests.jsonl
+            ${{ runner.temp }}/temporal-server.log
+          if-no-files-found: ignore
+          retention-days: 7

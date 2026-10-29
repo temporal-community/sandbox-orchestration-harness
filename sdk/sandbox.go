@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/google/uuid"
@@ -270,6 +271,14 @@ func NewSandbox(ctx workflow.Context, sandboxProvider Provider, opts ...SandboxO
 	if cfg.idleTimeout < 0 && cfg.idleTimeout != NoIdleTimeout {
 		return nil, fmt.Errorf("sandbox: WithIdleTimeout: duration must be non-negative or NoIdleTimeout, got %v", cfg.idleTimeout)
 	}
+	policy, err := compute.ResolvePolicy(sandboxProvider)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: provider policy: %w", err)
+	}
+	if err := policy.ValidateInitial(cfg.idleTimeout, cfg.snapshot); err != nil {
+		return nil, fmt.Errorf("sandbox: initial policy: %w", err)
+	}
+	sandboxProvider.Config = maps.Clone(sandboxProvider.Config)
 
 	encodedSandboxId := workflow.SideEffect(ctx, func(ctx workflow.Context) any { return uuid.New().String() })
 	var sandboxID string
