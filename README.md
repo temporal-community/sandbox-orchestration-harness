@@ -120,7 +120,7 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Seven providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Eight providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
@@ -131,6 +131,7 @@ Seven providers are included. All implement `compute.Provider` and self-register
 | AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
 | Modal | `compute.ProviderTypeModal` | `sdk/compute/modal` |
 | GKE Agent Sandbox | `compute.ProviderTypeGKEAgentSandbox` | `sdk/compute/gkeagentsandbox` |
+| Blaxel | `compute.ProviderTypeBlaxel` | `sdk/compute/blaxel` |
 
 ### Feature coverage
 
@@ -143,12 +144,17 @@ Seven providers are included. All implement `compute.Provider` and self-register
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
 | GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
+| Blaxel | ✓ | ✓ | ✓§ | ✓§ | ✓ | ✓¶ | ✓¶ |
 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
 ‡ Crafting snapshots are composite: the workspace home directory, the data of each dependency named in `dependencies`, and optionally the workspace root filesystem, recorded under one opaque snapshot ID. Work must live under `$HOME` to be captured unless `snapshot-base` is enabled. Forks are fully independent in both files and data.
 
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
+
+§ Blaxel puts an idle sandbox on standby by itself about 15 to 30 seconds after its last command, keeping memory and filesystem, and resumes it on the next one. `Suspend` and `Resume` are therefore no-ops.
+
+¶ Blaxel snapshots are in private preview and must be enabled for the workspace. In workspaces without them, `Snapshot` and `StartFromSnapshot` return `ErrUnsupported`.
 
 ### Provider configuration
 
@@ -253,6 +259,34 @@ export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","d
 
 Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`.
 
+**Blaxel** — `compute.ProviderTypeBlaxel`
+
+Set `BL_API_KEY` and `BL_WORKSPACE` on the Temporal activity worker. They are
+read from the worker's environment, never from the workflow's provider
+config. Without them the provider uses the workspace and credentials of `bl login`.
+
+```go
+provider := sandbox.Provider{
+    Type:   compute.ProviderTypeBlaxel,
+    Config: map[string]string{"image": "blaxel/base-image:latest"},
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `image` | Blaxel sandbox image, or a template deployed to the workspace (default: `blaxel/base-image:latest`). Arbitrary registry images are not accepted. |
+| `memory-mb` | Memory in MB, which also sets the CPU count (default: Blaxel's) |
+| `region` | Region such as `us-pdx-1` (default: `BL_REGION` on the worker, else chosen by Blaxel) |
+
+Commands run from the activity worker through the sandbox's HTTP API, so the
+image does not need a Temporal worker. A command that outlives the activity's
+timeout is killed, and the activity's retry runs it again. Output is read from
+the sandbox's process logs, which return up to 4 MB of each stream, less once a
+sandbox has run many commands; a command with more output fails with
+`ErrUnsupported` rather than return part of it or run again. Snapshots are workspace objects that outlive their source
+sandbox; the source keeps running while one is taken. A fork starts from the
+snapshot, so `image`, `memory-mb` and `region` apply only to `Start`.
+
 ### Adding a provider
 
 1. Create a package under `sdk/compute/<name>/`.
@@ -325,6 +359,7 @@ sdk/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
+    blaxel/provider.go    # Blaxel provider
     crafting/             # Crafting provider + reference sandbox template
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
