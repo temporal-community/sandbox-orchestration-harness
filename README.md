@@ -152,9 +152,9 @@ Providers without native Suspend/Resume (Modal, GKE) automatically get suspend s
 
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
 
-§ Blaxel puts an idle sandbox on standby by itself about 15 to 30 seconds after its last command, keeping memory and filesystem, and resumes it on the next one. `Suspend` and `Resume` are therefore no-ops.
+§ Blaxel puts an idle sandbox on standby by itself about 30 seconds after its last command, keeping memory and filesystem, and resumes it on the next one. `Suspend` and `Resume` are therefore no-ops.
 
-¶ Blaxel snapshots are in private preview and must be enabled for the workspace. In workspaces without them, `Snapshot` and `StartFromSnapshot` return `ErrUnsupported`.
+¶ Blaxel snapshots are in private preview and must be enabled for the workspace. In workspaces without them, `Snapshot`, `StartFromSnapshot` and `DeleteSnapshot` return `ErrUnsupported`.
 
 ### Provider configuration
 
@@ -274,18 +274,46 @@ provider := sandbox.Provider{
 
 | Key | Description |
 |-----|-------------|
-| `image` | Blaxel sandbox image, or a template deployed to the workspace (default: `blaxel/base-image:latest`). Arbitrary registry images are not accepted. |
+| `image` | Blaxel sandbox image (default: `blaxel/base-image:latest`), or the name of a sandbox template in the workspace, such as `my-template`. Other registry images, such as `ubuntu:26.04`, are not accepted. |
 | `memory-mb` | Memory in MB, which also sets the CPU count (default: Blaxel's) |
 | `region` | Region such as `us-pdx-1` (default: `BL_REGION` on the worker, else chosen by Blaxel) |
 
 Commands run from the activity worker through the sandbox's HTTP API, so the
-image does not need a Temporal worker. A command that outlives the activity's
-timeout is killed, and the activity's retry runs it again. Output is read from
-the sandbox's process logs, which return up to 4 MB of each stream, less once a
-sandbox has run many commands; a command with more output fails with
-`ErrUnsupported` rather than return part of it or run again. Snapshots are workspace objects that outlive their source
-sandbox; the source keeps running while one is taken. A fork starts from the
-snapshot, so `image`, `memory-mb` and `region` apply only to `Start`.
+image does not need a Temporal worker. Each command takes about 0.5 s longer
+than it runs, and output with many lines is slow to collect: 60,000 short lines
+take minutes. A command runs once per activity: a retried attempt waits for the
+process its first attempt started instead of starting another. A command still
+running at the activity's timeout is killed and fails without a retry, as does
+any operation whose API key or workspace Blaxel rejects.
+
+Output is read from the sandbox's process logs. A command fails with
+`ErrUnsupported` rather than return part of its output when the output is over
+1.5 MB as the activity's result (Temporal's default payload limit is 2 MB), or
+over what the logs return: 4 MB of each stream, less once a sandbox has run
+many commands.
+
+Snapshots are workspace objects that outlive their source sandbox; the source
+keeps running while one is taken. A fork starts from the snapshot, so `image`,
+`memory-mb` and `region` apply only to `Start`.
+
+The examples other than `database-fork` set Modal with `ubuntu:26.04` in their
+`workflow.go`. To run one on Blaxel, set its provider to
+`compute.ProviderTypeBlaxel` with `"image": "blaxel/base-image:latest"`.
+
+`sdk/compute/blaxel/postgres/` is a reference sandbox template that runs
+Postgres. Push it once per workspace:
+
+```sh
+cd sdk/compute/blaxel/postgres && bl push
+```
+
+To run the `database-fork` example against it, which needs snapshots (¶) and is
+not built by `make bins`:
+
+```sh
+export SANDBOX_PROVIDER=blaxel
+export SANDBOX_PROVIDER_CONFIG='{"image":"temporal-postgres"}'
+```
 
 ### Adding a provider
 
@@ -359,7 +387,7 @@ sdk/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
-    blaxel/provider.go    # Blaxel provider
+    blaxel/               # Blaxel provider + reference Postgres sandbox template
     crafting/             # Crafting provider + reference sandbox template
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
