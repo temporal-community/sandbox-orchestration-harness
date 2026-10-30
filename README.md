@@ -263,7 +263,8 @@ Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-
 
 Set `BL_API_KEY` and `BL_WORKSPACE` on the Temporal activity worker. They are
 read from the worker's environment, never from the workflow's provider
-config. Without them the provider uses the workspace and credentials of `bl login`.
+config. Without them the provider uses the workspace and credentials of
+`bl login`.
 
 ```go
 provider := sandbox.Provider{
@@ -287,12 +288,13 @@ any operation whose API key or workspace Blaxel rejects.
 
 Output is read from the sandbox's process logs. A command fails with
 `ErrUnsupported` rather than return part of its output when the output is over
-1.5 MB as the activity's result (Temporal's default payload limit is 2 MB), or
-over what the logs return: 4 MB of each stream, less once a sandbox has run
-many commands. The provider sets `SANDBOX_DISABLE_PROCESS_LOGGING=true` in its
-sandboxes, so command output does not appear in the Blaxel console's logs:
-copying it there line by line would make 60,000 short lines take about 100 s
-instead of under 1 s.
+1.5 MB as the activity's result (as Temporal encodes it: JSON turns `<`, `>`,
+`&` and control characters into six bytes each; Temporal's default payload
+limit is 2 MB), or over what the logs return: 4 MB of each stream, less once a
+sandbox has run many commands. The provider sets
+`SANDBOX_DISABLE_PROCESS_LOGGING=true` in its sandboxes, so command output does
+not appear in the Blaxel console's logs: copying it there line by line would
+make 60,000 short lines take about 100 s instead of under 1 s.
 
 Snapshots are workspace objects that outlive their source sandbox; the source
 keeps running while one is taken. A fork starts from the snapshot, so `image`,
