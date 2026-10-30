@@ -120,7 +120,7 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Seven providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Eight providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
@@ -131,6 +131,7 @@ Seven providers are included. All implement `compute.Provider` and self-register
 | AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
 | Modal | `compute.ProviderTypeModal` | `sdk/compute/modal` |
 | GKE Agent Sandbox | `compute.ProviderTypeGKEAgentSandbox` | `sdk/compute/gkeagentsandbox` |
+| Blaxel | `compute.ProviderTypeBlaxel` | `sdk/compute/blaxel` |
 
 ### Feature coverage
 
@@ -143,12 +144,17 @@ Seven providers are included. All implement `compute.Provider` and self-register
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
 | GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
+| Blaxel | ✓ | ✓ | ✓§ | ✓§ | ✓ | ✓¶ | ✓¶ |
 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
 ‡ Crafting snapshots are composite: the workspace home directory, the data of each dependency named in `dependencies`, and optionally the workspace root filesystem, recorded under one opaque snapshot ID. Work must live under `$HOME` to be captured unless `snapshot-base` is enabled. Forks are fully independent in both files and data.
 
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
+
+§ Blaxel puts an idle sandbox on standby by itself about 30 seconds after its last command, keeping memory and filesystem, and resumes it on the next one. `Suspend` and `Resume` are therefore no-ops.
+
+¶ Blaxel snapshots are in private preview and must be enabled for the workspace. In workspaces without them, `Snapshot`, `StartFromSnapshot` and `DeleteSnapshot` return `ErrUnsupported`.
 
 ### Provider configuration
 
@@ -253,6 +259,66 @@ export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","d
 
 Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`.
 
+**Blaxel** — `compute.ProviderTypeBlaxel`
+
+Set `BL_API_KEY` and `BL_WORKSPACE` on the Temporal activity worker. They are
+read from the worker's environment, never from the workflow's provider
+config. Without them the provider uses the workspace and credentials of
+`bl login`.
+
+```go
+provider := sandbox.Provider{
+    Type:   compute.ProviderTypeBlaxel,
+    Config: map[string]string{"image": "blaxel/base-image:latest"},
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `image` | Blaxel sandbox image (default: `blaxel/base-image:latest`), or the name of a sandbox template in the workspace, such as `my-template`. Other registry images, such as `ubuntu:26.04`, are not accepted. |
+| `memory-mb` | Memory in MB, which also sets the CPU count (default: Blaxel's) |
+| `region` | Region such as `us-pdx-1` (default: `BL_REGION` on the worker, else chosen by Blaxel) |
+
+Commands run from the activity worker through the sandbox's HTTP API, so the
+image does not need a Temporal worker. Each command takes about 0.5 s longer
+than it runs. A command runs once per activity: a retried attempt waits for the
+process its first attempt started instead of starting another. A command still
+running at the activity's timeout is killed and fails without a retry, as does
+any operation whose API key or workspace Blaxel rejects.
+
+Output is read from the sandbox's process logs. A command fails with
+`ErrUnsupported` rather than return part of its output when the output is over
+1.5 MB as the activity's result (as Temporal encodes it: JSON turns `<`, `>`,
+`&` and control characters into six bytes each; Temporal's default payload
+limit is 2 MB), or over what the logs return: 4 MB of each stream, less once a
+sandbox has run many commands. The provider sets
+`SANDBOX_DISABLE_PROCESS_LOGGING=true` in its sandboxes, so command output does
+not appear in the Blaxel console's logs: copying it there line by line would
+make 60,000 short lines take about 100 s instead of under 1 s.
+
+Snapshots are workspace objects that outlive their source sandbox; the source
+keeps running while one is taken. A fork starts from the snapshot, so `image`,
+`memory-mb` and `region` apply only to `Start`.
+
+The examples other than `database-fork` set Modal with `ubuntu:26.04` in their
+`workflow.go`. To run one on Blaxel, set its provider to
+`compute.ProviderTypeBlaxel` with `"image": "blaxel/base-image:latest"`.
+
+`sdk/compute/blaxel/postgres/` is a reference sandbox template that runs
+Postgres. Push it once per workspace:
+
+```sh
+cd sdk/compute/blaxel/postgres && bl push
+```
+
+To run the `database-fork` example against it, which needs snapshots (¶) and is
+not built by `make bins`:
+
+```sh
+export SANDBOX_PROVIDER=blaxel
+export SANDBOX_PROVIDER_CONFIG='{"image":"temporal-postgres"}'
+```
+
 ### Adding a provider
 
 1. Create a package under `sdk/compute/<name>/`.
@@ -325,6 +391,7 @@ sdk/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
+    blaxel/               # Blaxel provider + reference Postgres sandbox template
     crafting/             # Crafting provider + reference sandbox template
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
