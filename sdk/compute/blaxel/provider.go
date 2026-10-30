@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 	blaxelsdk "github.com/blaxel-ai/sdk-go"
 	"github.com/blaxel-ai/sdk-go/option"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 )
 
 const providerType = compute.ProviderTypeBlaxel
@@ -30,7 +33,7 @@ func init() { compute.Register(providerType, New) }
 // The region falls back to BL_REGION on the worker, as in Blaxel's SDKs.
 func New(config map[string]string) (compute.Provider, error) {
 	if workspace := blaxelsdk.GetDefaultWorkspace(); workspace == "" || !hasCredentials(workspace) {
-		return nil, fmt.Errorf("blaxel: set BL_WORKSPACE and BL_API_KEY on the activity worker")
+		return nil, fmt.Errorf("blaxel: set BL_WORKSPACE and BL_API_KEY on the activity worker, or run `bl login <workspace>` as the worker's user")
 	}
 	p := &provider{
 		image:  strings.TrimSpace(config["image"]),
@@ -68,10 +71,16 @@ var noRetry = option.WithMaxRetries(0)
 // truncated starts an output stream the sandbox has cut down to its tail.
 const truncated = "[... truncated, see the process log file for the full output ...]"
 
+// maxResult keeps a command's result, as Temporal's default converter encodes
+// it, below Temporal's default 2 MiB payload limit. Temporal rejects a larger
+// result and retries the activity forever.
+const maxResult = 3 << 19 // 1.5 MiB
+
 // String prevents the activity worker's credentials from appearing in logs.
 func (p *provider) String() string { return "blaxel provider" }
 
-func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.ProviderStatus, error) {
+func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.ProviderStatus, err error) {
+	defer finalAuthError(&err)
 	name, err := sandboxName(taskQueueName, "")
 	if err != nil {
 		return nil, err
@@ -102,7 +111,8 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 	return p.waitDeployed(ctx, sandbox)
 }
 
-func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
+func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) (err error) {
+	defer finalAuthError(&err)
 	name, err := instanceName(status)
 	if err != nil {
 		return err
@@ -113,14 +123,15 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) err
 	return nil
 }
 
-// Suspend is a no-op: Blaxel puts a sandbox on standby by itself about 15 to 30
+// Suspend is a no-op: Blaxel puts a sandbox on standby by itself about 30
 // seconds after its last request, keeping memory and filesystem.
 func (p *provider) Suspend(context.Context, *compute.ProviderStatus) error { return nil }
 
 // Resume is a no-op: the next request to a sandbox on standby resumes it.
 func (p *provider) Resume(context.Context, *compute.ProviderStatus) error { return nil }
 
-func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
+func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (_ compute.SandboxPostSnapshotState, _ *compute.ProviderSnapshot, err error) {
+	defer finalAuthError(&err)
 	name, err := instanceName(status)
 	if err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
@@ -142,7 +153,8 @@ func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus)
 	return compute.SandboxPostSnapshotRunning, &compute.ProviderSnapshot{SnapshotID: snapshot.ID}, nil
 }
 
-func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
+func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *compute.ProviderSnapshot) (_ *compute.ProviderStatus, err error) {
+	defer finalAuthError(&err)
 	if snapshot == nil || snapshot.SnapshotID == "" {
 		return nil, fmt.Errorf("blaxel: snapshot id is required")
 	}
@@ -164,7 +176,8 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 	return p.waitDeployed(ctx, sandbox)
 }
 
-func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) error {
+func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) (err error) {
+	defer finalAuthError(&err)
 	if snapshot == nil || snapshot.SnapshotID == "" {
 		return fmt.Errorf("blaxel: snapshot id is required")
 	}
@@ -174,7 +187,8 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 	return nil
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (_ *compute.CommandResult, err error) {
+	defer finalAuthError(&err)
 	name, err := instanceName(status)
 	if err != nil {
 		return nil, err
@@ -196,24 +210,73 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	// Start the command and poll it rather than holding one request open: the
 	// gateway ends requests after two minutes, and process status responses
 	// truncate output, so the output is read from the logs afterwards.
-	process, err := sandbox.Process.New(ctx, request)
+	command, err := startOnce(ctx, sandbox.Process, request)
 	if err != nil {
 		return nil, fmt.Errorf("blaxel: execute command: %w", err)
 	}
-	if process, err = sandbox.Process.Wait(ctx, process.Name, -1, 250*time.Millisecond); err != nil {
+	// Wait retries transient errors itself until the activity's deadline.
+	process, err := sandbox.Process.Wait(ctx, command, -1, 250*time.Millisecond)
+	if err != nil {
 		return nil, fmt.Errorf("blaxel: wait for command: %w", err)
 	}
-	logs, err := sandbox.Process.GetLogs(ctx, process.Name)
+	if process.Status == blaxelsdk.ProcessResponseStatusKilled || process.Status == blaxelsdk.ProcessResponseStatusStopped {
+		// Usually the activity's timeout. Retrying would find the same process.
+		message := fmt.Sprintf("blaxel: command was %s before it finished, at the activity's timeout or by request", process.Status)
+		return nil, temporal.NewNonRetryableApplicationError(message, "CommandKilled", nil)
+	}
+	logs, err := sandbox.Process.GetLogs(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("blaxel: read command output: %w", err)
 	}
 	// The logs return a bounded tail of each stream: up to 4 MB, less once a
 	// sandbox has run many commands. Partial output is not the command's output,
-	// and a retry would only run the command into the same limit again.
+	// and a retry would only find the same output again.
 	if strings.HasPrefix(logs.Stdout, truncated) || strings.HasPrefix(logs.Stderr, truncated) {
 		return nil, fmt.Errorf("blaxel: command output truncated; refusing to report incomplete output: %w", errors.ErrUnsupported)
 	}
-	return &compute.CommandResult{Stdout: logs.Stdout, Stderr: logs.Stderr, ExitCode: int32(process.ExitCode)}, nil
+	result := &compute.CommandResult{Stdout: logs.Stdout, Stderr: logs.Stderr, ExitCode: int32(process.ExitCode)}
+	// JSON escapes control characters, invalid UTF-8 and <, > and & to six bytes
+	// each, so measure the result as Temporal will record it.
+	if encoded, _ := json.Marshal(result); len(encoded) > maxResult {
+		return nil, fmt.Errorf("blaxel: command output is %d bytes as an activity result, over the %d-byte limit: %w", len(encoded), maxResult, errors.ErrUnsupported)
+	}
+	return result, nil
+}
+
+// startOnce starts the command once per activity and returns its process name.
+// Every attempt of an activity names its process alike, so an attempt that
+// follows a lost response, a failed poll or a worker restart waits for the
+// command an earlier attempt started rather than run it again. Outside an
+// activity the sandbox names the process.
+func startOnce(ctx context.Context, processes *blaxelsdk.SandboxInstanceProcessService, request blaxelsdk.ProcessRequestParam) (string, error) {
+	if !activity.IsActivity(ctx) {
+		process, err := processes.New(ctx, request)
+		if err != nil {
+			return "", err
+		}
+		return process.Name, nil
+	}
+	info := activity.GetInfo(ctx)
+	sum := sha256.Sum256([]byte(strings.Join([]string{info.WorkflowExecution.ID, info.WorkflowExecution.RunID, info.ActivityID, info.ActivityRunID}, "\x00")))
+	name := "temporal-" + hex.EncodeToString(sum[:8])
+	request.Name = blaxelsdk.String(name)
+	for delay := time.Second; ; delay = min(2*delay, 15*time.Second) {
+		// The sandbox would start a second process under the name of one that
+		// has exited, so look for it first.
+		if _, err := processes.Get(ctx, name); !isStatus(err, http.StatusNotFound) {
+			return name, err
+		}
+		_, err := processes.New(ctx, request)
+		if err == nil || !transient(err) {
+			return name, err
+		}
+		// The command may have started before its response was lost.
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(delay):
+		}
+	}
 }
 
 // waitDeployed returns once the sandbox accepts commands.
@@ -239,10 +302,28 @@ func (p *provider) waitDeployed(ctx context.Context, sandbox *blaxelsdk.Sandbox)
 // Snapshots are in private preview and answer 403 in workspaces without them.
 // Report that as unsupported so the workflow fails instead of retrying forever.
 func snapshotError(op string, err error) error {
-	if isStatus(err, http.StatusForbidden) {
+	var e *blaxelsdk.Error
+	if errors.As(err, &e) && e.StatusCode == http.StatusForbidden && strings.Contains(e.RawJSON(), "feature is not enabled") {
 		return fmt.Errorf("blaxel: %s: %w: %w", op, errors.ErrUnsupported, err)
 	}
 	return fmt.Errorf("blaxel: %s: %w", op, err)
+}
+
+// finalAuthError makes a rejected API key or workspace final: retrying it only
+// hangs the workflow.
+func finalAuthError(err *error) {
+	if *err != nil && !errors.Is(*err, errors.ErrUnsupported) && (isStatus(*err, http.StatusUnauthorized) || isStatus(*err, http.StatusForbidden)) {
+		*err = temporal.NewNonRetryableApplicationError((*err).Error(), "Unauthorized", *err)
+	}
+}
+
+// transient reports whether a request may succeed if sent again.
+func transient(err error) bool {
+	var e *blaxelsdk.Error
+	if errors.As(err, &e) {
+		return e.StatusCode == http.StatusRequestTimeout || e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+	}
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // hasCredentials looks where NewDefaultClient does: the environment, then the

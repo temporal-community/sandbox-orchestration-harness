@@ -11,10 +11,11 @@ import (
 
 	blaxelsdk "github.com/blaxel-ai/sdk-go"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
+	"go.temporal.io/sdk/activity"
 )
 
 // Run with BLAXEL_LIVE=1, BL_API_KEY and BL_WORKSPACE on an activity worker.
-// Snapshot and fork are checked only in workspaces where they are enabled.
+// The snapshot subtest skips itself in workspaces without snapshots.
 func TestBlaxelLiveStandbyAndSnapshot(t *testing.T) {
 	if os.Getenv("BLAXEL_LIVE") != "1" {
 		t.Skip("set BLAXEL_LIVE=1, BL_API_KEY and BL_WORKSPACE to test the live cloud")
@@ -75,16 +76,38 @@ func TestBlaxelLiveStandbyAndSnapshot(t *testing.T) {
 	if err != nil || result.ExitCode != 3 || result.Stdout != "temporal-live\n" || result.Stderr != "out-of-band\n" {
 		t.Fatalf("resumed sandbox: result=%+v err=%v", result, err)
 	}
-	// More output than the process logs return fails instead of coming back cut.
-	if result, err := p.ExecuteCommand(ctx, original, "head -c 5000000 /dev/zero | tr '\\0' x"); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "truncated") {
-		t.Fatalf("oversized output: err=%v", err)
-	} else if result != nil {
-		t.Fatalf("oversized output returned %d bytes", len(result.Stdout))
+	// A retried command waits for the process its first attempt started.
+	result, err = runActivity(t, func(ctx context.Context) (*compute.CommandResult, error) {
+		if activity.GetInfo(ctx).Attempt == 1 {
+			// The first attempt's worker goes away mid-command.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			time.AfterFunc(3*time.Second, cancel)
+		}
+		return p.ExecuteCommand(ctx, original, "echo run >> /tmp/runs; sleep 8; wc -l < /tmp/runs")
+	})
+	if err != nil || strings.TrimSpace(result.Stdout) != "1" {
+		t.Fatalf("retried command: result=%+v err=%v", result, err)
 	}
+	// Output over Temporal's payload limit, or more than the process logs
+	// return, fails instead of hanging or coming back cut.
+	for command, reason := range map[string]string{
+		"head -c 2500000 /dev/zero | tr '\\0' x": "limit",
+		"head -c 5000000 /dev/zero | tr '\\0' x": "truncated",
+	} {
+		if result, err := p.ExecuteCommand(ctx, original, command); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), reason) {
+			t.Fatalf("oversized output: %s: err=%v", command, err)
+		} else if result != nil {
+			t.Fatalf("oversized output returned %d bytes", len(result.Stdout))
+		}
+	}
+	t.Run("snapshot", func(t *testing.T) { liveSnapshot(ctx, t, p, original, queue, cleanupSandbox) })
+}
+
+func liveSnapshot(ctx context.Context, t *testing.T, p *provider, original *compute.ProviderStatus, queue string, cleanupSandbox func(*compute.ProviderStatus)) {
 	_, snapshot, err := p.Snapshot(ctx, original)
 	if errors.Is(err, errors.ErrUnsupported) {
-		t.Logf("snapshots are not enabled in this workspace: %v", err)
-		return
+		t.Skipf("snapshots are not enabled in this workspace: %v", err)
 	}
 	if err != nil {
 		t.Fatalf("live snapshot: %v", err)
@@ -101,7 +124,7 @@ func TestBlaxelLiveStandbyAndSnapshot(t *testing.T) {
 		t.Fatalf("live fork: %v", err)
 	}
 	t.Cleanup(func() { cleanupSandbox(fork) })
-	result, err = p.ExecuteCommand(ctx, fork, "cat /tmp/proof && echo $TEMPORAL_TASK_QUEUE")
+	result, err := p.ExecuteCommand(ctx, fork, "cat /tmp/proof && echo $TEMPORAL_TASK_QUEUE")
 	if err != nil || result.ExitCode != 0 || !strings.HasSuffix(result.Stdout, "temporal-live\n"+queue+"-fork\n") {
 		t.Fatalf("forked sandbox: result=%+v err=%v", result, err)
 	}
