@@ -74,6 +74,16 @@ func isFinal(err error, errType string) bool {
 	return errors.As(err, &e) && e.NonRetryable() && e.Type() == errType
 }
 
+// envs lists a request's environment variables as NAME=value, in order.
+func envs(request map[string]any) string {
+	var pairs []string
+	for _, env := range request["envs"].([]any) {
+		env := env.(map[string]any)
+		pairs = append(pairs, fmt.Sprintf("%s=%s", env["name"], env["value"]))
+	}
+	return strings.Join(pairs, " ")
+}
+
 func TestLifecycleAndSnapshot(t *testing.T) {
 	calls := []string{}
 	var created, forked, execed map[string]any
@@ -130,9 +140,8 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	}
 	spec := created["spec"].(map[string]any)
 	runtime := spec["runtime"].(map[string]any)
-	env := runtime["envs"].([]any)[0].(map[string]any)
 	if runtime["image"] != "blaxel/py-app:latest" || runtime["memory"] != float64(2048) || spec["region"] != "us-pdx-1" ||
-		env["name"] != "TEMPORAL_TASK_QUEUE" || env["value"] != "queue-1" ||
+		envs(runtime) != "TEMPORAL_TASK_QUEUE=queue-1 SANDBOX_DISABLE_PROCESS_LOGGING=true" ||
 		created["metadata"].(map[string]any)["labels"].(map[string]any)["temporal-harness"] != "blaxel" {
 		t.Fatalf("create request: %v", created)
 	}
@@ -157,8 +166,7 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	if err != nil || fork.InstanceID == status.InstanceID || fork.InstanceID != forked["targetName"] {
 		t.Fatalf("fork: %v %v", fork, err)
 	}
-	env = forked["envs"].([]any)[0].(map[string]any)
-	if forked["targetType"] != "sandbox" || env["value"] != "queue-2" {
+	if forked["targetType"] != "sandbox" || envs(forked) != "TEMPORAL_TASK_QUEUE=queue-2 SANDBOX_DISABLE_PROCESS_LOGGING=true" {
 		t.Fatalf("fork request: %v", forked)
 	}
 	// Deleting what is already gone succeeds, so retried cleanup is safe.

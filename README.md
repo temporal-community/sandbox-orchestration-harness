@@ -280,8 +280,7 @@ provider := sandbox.Provider{
 
 Commands run from the activity worker through the sandbox's HTTP API, so the
 image does not need a Temporal worker. Each command takes about 0.5 s longer
-than it runs, and output with many lines is slow to collect: 60,000 short lines
-take minutes. A command runs once per activity: a retried attempt waits for the
+than it runs. A command runs once per activity: a retried attempt waits for the
 process its first attempt started instead of starting another. A command still
 running at the activity's timeout is killed and fails without a retry, as does
 any operation whose API key or workspace Blaxel rejects.
@@ -290,7 +289,10 @@ Output is read from the sandbox's process logs. A command fails with
 `ErrUnsupported` rather than return part of its output when the output is over
 1.5 MB as the activity's result (Temporal's default payload limit is 2 MB), or
 over what the logs return: 4 MB of each stream, less once a sandbox has run
-many commands.
+many commands. The provider sets `SANDBOX_DISABLE_PROCESS_LOGGING=true` in its
+sandboxes, so command output does not appear in the Blaxel console's logs:
+copying it there line by line would make 60,000 short lines take about 100 s
+instead of under 1 s.
 
 Snapshots are workspace objects that outlive their source sandbox; the source
 keeps running while one is taken. A fork starts from the snapshot, so `image`,

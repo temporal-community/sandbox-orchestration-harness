@@ -85,7 +85,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.
 	if err != nil {
 		return nil, err
 	}
-	runtime := blaxelsdk.SandboxRuntimeParam{Envs: taskQueueEnv(taskQueueName)}
+	runtime := blaxelsdk.SandboxRuntimeParam{Envs: sandboxEnv(taskQueueName)}
 	if p.image != "" {
 		runtime.Image = blaxelsdk.String(p.image)
 	}
@@ -163,7 +163,7 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 		return nil, err
 	}
 	_, err = p.client.Snapshots.Fork(ctx, snapshot.SnapshotID, blaxelsdk.SnapshotForkParams{
-		SandboxForkRequest: blaxelsdk.SandboxForkRequestParam{TargetName: name, TargetType: "sandbox", Envs: taskQueueEnv(taskQueueName)},
+		SandboxForkRequest: blaxelsdk.SandboxForkRequestParam{TargetName: name, TargetType: "sandbox", Envs: sandboxEnv(taskQueueName)},
 	}, noRetry)
 	// A conflict means an earlier attempt of this activity already forked it.
 	if err != nil && !isStatus(err, http.StatusConflict) {
@@ -340,8 +340,16 @@ func isStatus(err error, status int) bool {
 	var e *blaxelsdk.Error
 	return errors.As(err, &e) && e.StatusCode == status
 }
-func taskQueueEnv(queue string) []blaxelsdk.EnvParam {
-	return []blaxelsdk.EnvParam{{Name: blaxelsdk.String("TEMPORAL_TASK_QUEUE"), Value: blaxelsdk.String(queue)}}
+
+// sandboxEnv gives a sandbox its task queue and stops it from copying each line
+// of a command's output into Blaxel's logs as it reads it. That takes about 2 ms
+// a line, and the command is not done until it has: 60,000 short lines take 100
+// seconds with it and under one without. The output still comes back in full.
+func sandboxEnv(queue string) []blaxelsdk.EnvParam {
+	return []blaxelsdk.EnvParam{
+		{Name: blaxelsdk.String("TEMPORAL_TASK_QUEUE"), Value: blaxelsdk.String(queue)},
+		{Name: blaxelsdk.String("SANDBOX_DISABLE_PROCESS_LOGGING"), Value: blaxelsdk.String("true")},
+	}
 }
 func instanceName(status *compute.ProviderStatus) (string, error) {
 	if status == nil || status.InstanceID == "" {

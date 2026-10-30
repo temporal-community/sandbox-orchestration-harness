@@ -89,6 +89,7 @@ func TestBlaxelLiveStandbyAndSnapshot(t *testing.T) {
 	if err != nil || strings.TrimSpace(result.Stdout) != "1" {
 		t.Fatalf("retried command: result=%+v err=%v", result, err)
 	}
+	liveManyLines(ctx, t, p, original)
 	// Output over Temporal's payload limit, or more than the process logs
 	// return, fails instead of hanging or coming back cut.
 	for command, reason := range map[string]string{
@@ -127,5 +128,22 @@ func liveSnapshot(ctx context.Context, t *testing.T, p *provider, original *comp
 	result, err := p.ExecuteCommand(ctx, fork, "cat /tmp/proof && echo $TEMPORAL_TASK_QUEUE")
 	if err != nil || result.ExitCode != 0 || !strings.HasSuffix(result.Stdout, "temporal-live\n"+queue+"-fork\n") {
 		t.Fatalf("forked sandbox: result=%+v err=%v", result, err)
+	}
+	liveManyLines(ctx, t, p, fork)
+}
+
+// liveManyLines checks that output with many lines comes back whole and fast,
+// which it does only while the sandbox does not log each line.
+func liveManyLines(ctx context.Context, t *testing.T, p *provider, status *compute.ProviderStatus) {
+	start := time.Now()
+	result, err := p.ExecuteCommand(ctx, status, "seq 1 60000")
+	if err != nil {
+		t.Fatalf("many lines: %v", err)
+	}
+	if !strings.HasPrefix(result.Stdout, "1\n2\n") || !strings.HasSuffix(result.Stdout, "\n60000\n") || len(result.Stdout) != 348894 {
+		t.Fatalf("many lines: got %d bytes", len(result.Stdout))
+	}
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("60,000 lines took %s", elapsed)
 	}
 }
