@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.22.0
+	github.com/basetenlabs/baseten-go v0.6.0
 	github.com/blaxel-ai/sdk-go v0.29.1
 	github.com/crafting-demo/lightweight-go-client v0.0.0-20260818190824-9f09408822e9
 	github.com/daytonaio/daytona/libs/sdk-go v0.170.0

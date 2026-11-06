@@ -120,7 +120,7 @@ err := sandbox.Register(w, temporalClient)
 
 ## Compute providers
 
-Eight providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
+Nine providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
 | Provider | Type constant | Blank-import |
 |----------|--------------|--------------|
@@ -132,6 +132,7 @@ Eight providers are included. All implement `compute.Provider` and self-register
 | Modal | `compute.ProviderTypeModal` | `sdk/compute/modal` |
 | GKE Agent Sandbox | `compute.ProviderTypeGKEAgentSandbox` | `sdk/compute/gkeagentsandbox` |
 | Blaxel | `compute.ProviderTypeBlaxel` | `sdk/compute/blaxel` |
+| Baseten Sandboxes | `compute.ProviderTypeBaseten` | `sdk/compute/baseten` |
 
 ### Feature coverage
 
@@ -145,6 +146,7 @@ Eight providers are included. All implement `compute.Provider` and self-register
 | Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
 | GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
 | Blaxel | ✓ | ✓ | ✓§ | ✓§ | ✓ | ✓¶ | ✓¶ |
+| Baseten Sandboxes | ✓ | ✓ | ✓§ | ✓§ | ✓ | | |
 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
@@ -152,7 +154,7 @@ Providers without native Suspend/Resume (Modal, GKE) automatically get suspend s
 
 † GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
 
-§ Blaxel puts an idle sandbox on standby by itself about 30 seconds after its last command, keeping memory and filesystem, and resumes it on the next one. `Suspend` and `Resume` are therefore no-ops.
+§ Blaxel and Baseten put an idle sandbox on standby by themselves and resume it on the next request: Blaxel about 30 seconds after its last command, keeping memory and filesystem; Baseten once it stops receiving requests, keeping its files and processes. `Suspend` and `Resume` are therefore no-ops.
 
 ¶ Blaxel snapshots are in private preview and must be enabled for the workspace. In workspaces without them, `Snapshot`, `StartFromSnapshot` and `DeleteSnapshot` return `ErrUnsupported`.
 
@@ -319,6 +321,49 @@ export SANDBOX_PROVIDER=blaxel
 export SANDBOX_PROVIDER_CONFIG='{"image":"temporal-postgres"}'
 ```
 
+**Baseten Sandboxes** — `compute.ProviderTypeBaseten`
+
+Set `BASETEN_API_KEY` on the Temporal activity worker. It is read from the
+worker's environment, never from the workflow's provider config. The provider
+exchanges it for short-lived sandbox access tokens and renews them itself.
+
+```go
+provider := sandbox.Provider{
+    Type:   compute.ProviderTypeBaseten,
+    Config: map[string]string{"image": "baseten/base-image:latest"},
+}
+```
+
+| Key | Description |
+|-----|-------------|
+| `image` | Sandbox image with its tag (default: `baseten/base-image:latest`), a built-in image or one built in your team |
+| `memory-mb` | Memory in MB, which also sets the CPU count (default: Baseten's, 4096) |
+| `region` | Region such as `us-pdx-1` (default: Baseten's) |
+| `team-id` | Team to create sandboxes in; required only for API keys in more than one team |
+
+Commands run from the activity worker through the sandbox's HTTP API, so the
+image does not need a Temporal worker. Each command takes about 0.5 s longer
+than it runs. A command runs once per activity: a retried attempt waits for the
+process its first attempt started instead of starting another. A command still
+running at the activity's timeout is killed and fails without a retry. A
+request Baseten rejects (an API key it refuses, an unknown image or region, a
+sandbox that is gone) also fails without a retry, and a sandbox that fails to
+start is deleted and fails `Start` without a retry.
+
+Output is read from the sandbox's process logs. A command fails without a
+retry, with error type `OutputTooLarge`, rather than return part of its output
+when the output is over 1.5 MiB as the activity's result (as Temporal encodes
+it: JSON turns `<`, `>`, `&` and control characters into six bytes each;
+Temporal's default payload limit is 2 MiB), or over what the logs return. The
+provider sets `SANDBOX_DISABLE_PROCESS_LOGGING=true` in its sandboxes, so
+command output does not appear in the sandbox's runtime logs: copying it there
+line by line makes 60,000 short lines take about 100 s instead of under 1 s.
+
+Baseten Sandboxes have no snapshots, so the `snapshot-fork` and
+`database-fork` examples do not run on them. The other examples set Modal with
+`ubuntu:26.04` in their `workflow.go`; to run one on Baseten, set its provider
+to `compute.ProviderTypeBaseten` with `"image": "baseten/base-image:latest"`.
+
 ### Adding a provider
 
 1. Create a package under `sdk/compute/<name>/`.
@@ -391,6 +436,7 @@ sdk/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
     agentcore/provider.go # AWS AgentCore Runtime provider
+    baseten/provider.go   # Baseten Sandboxes provider
     blaxel/               # Blaxel provider + reference Postgres sandbox template
     crafting/             # Crafting provider + reference sandbox template
     daytona/provider.go   # Daytona provider

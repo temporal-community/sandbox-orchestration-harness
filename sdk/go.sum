@@ -44,6 +44,8 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.42.0 h1:ks8KBcZPh3PYISr5dAiXCM5/Thcu
 github.com/aws/aws-sdk-go-v2/service/sts v1.42.0/go.mod h1:pFw33T0WLvXU3rw1WBkpMlkgIn54eCB5FYLhjDc9Foo=
 github.com/aws/smithy-go v1.25.0 h1:Sz/XJ64rwuiKtB6j98nDIPyYrV1nVNJ4YU74gttcl5U=
 github.com/aws/smithy-go v1.25.0/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/basetenlabs/baseten-go v0.6.0 h1:Hqk17Ykrl8EkWB7mu8wAp0u9lRRHiwPKpYqfRhP9cMI=
+github.com/basetenlabs/baseten-go v0.6.0/go.mod h1:nIvRKKh3Wd+f9QMz13/1vBBqtk/XzpzTyTeOXkD+6Mw=
 github.com/blaxel-ai/sdk-go v0.29.1 h1:X1G39qjd9dpNtunF/XYo2RFqymPmK1noFfrLqnOOf9o=
 github.com/blaxel-ai/sdk-go v0.29.1/go.mod h1:16T4C74vB/02MV8JjB3Uf9Ag4RbFbDKjdatrorX9E/U=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
