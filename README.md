@@ -285,15 +285,17 @@ Commands run from the activity worker through the sandbox's HTTP API, so the
 image does not need a Temporal worker. Each command takes about 0.5 s longer
 than it runs. A command runs once per activity: a retried attempt waits for the
 process its first attempt started instead of starting another. A command still
-running at the activity's timeout is killed and fails without a retry, as does
-any operation whose API key or workspace Blaxel rejects.
+running at the activity's timeout is killed and fails without a retry. A
+request Blaxel rejects (an API key or workspace it refuses, an image or region
+it does not accept, a sandbox that is gone) also fails without a retry, and a
+sandbox that fails to start is deleted and fails `Start` without a retry.
 
-Output is read from the sandbox's process logs. A command fails with
-`ErrUnsupported` rather than return part of its output when the output is over
-1.5 MB as the activity's result (as Temporal encodes it: JSON turns `<`, `>`,
-`&` and control characters into six bytes each; Temporal's default payload
-limit is 2 MB), or over what the logs return: 4 MB of each stream, less once a
-sandbox has run many commands. The provider sets
+Output is read from the sandbox's process logs. A command fails without a
+retry, with error type `OutputTooLarge`, rather than return part of its output
+when the output is over 1.5 MiB as the activity's result (as Temporal encodes
+it: JSON turns `<`, `>`, `&` and control characters into six bytes each;
+Temporal's default payload limit is 2 MiB), or over what the logs return: 4 MB
+of each stream, less once a sandbox has run many commands. The provider sets
 `SANDBOX_DISABLE_PROCESS_LOGGING=true` in its sandboxes, so command output does
 not appear in the Blaxel console's logs: copying it there line by line would
 make 60,000 short lines take about 100 s instead of under 1 s.

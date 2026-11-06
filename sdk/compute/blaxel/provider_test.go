@@ -239,9 +239,10 @@ func TestCommandRunsOncePerActivity(t *testing.T) {
 		case name != "" && route == "GET /sbx/process/"+name:
 			switch polls++; polls {
 			case 2:
-				// The first attempt fails while the command keeps running.
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":"bad request"}`)
+				// The first attempt fails with an error Temporal retries while
+				// the command keeps running.
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, `{"error":"conflict"}`)
 			case 4:
 				fmt.Fprintf(w, `{"name":%q,"status":"completed","exitCode":3}`, name)
 			default:
@@ -335,10 +336,10 @@ func TestNothingRepeatedOrPartial(t *testing.T) {
 	if _, err := p.ExecuteCommand(ctx, status, "make deploy"); err == nil || len(commands) != 1 {
 		t.Fatalf("command must be sent once and left to Temporal's retry: commands=%v err=%v", commands, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000"); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "truncated") || polls != 2 {
+	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "truncated") || polls != 2 {
 		t.Fatalf("truncated output returned: polls=%d result=%+v err=%v", polls, result, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "cat page.html"); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "limit") {
+	if result, err := p.ExecuteCommand(ctx, status, "cat page.html"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("output over Temporal's payload limit returned: result=%t err=%v", result != nil, err)
 	}
 	if result, err := p.ExecuteCommand(ctx, status, "sleep 900"); !isFinal(err, "CommandKilled") {
@@ -387,9 +388,42 @@ func TestRejectedCredentialsAreFinal(t *testing.T) {
 	}
 }
 
+func TestRejectedRequestsAreFinal(t *testing.T) {
+	fakeBlaxel(t, func(w http.ResponseWriter, r *http.Request, route string) {
+		switch route {
+		case "POST /v0/sandboxes":
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":400,"error":"image ubuntu:26.04 is not supported"}`)
+		case "GET /v0/sandboxes/temporal-1":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"code":404,"error":"Sandbox not found"}`)
+		default:
+			t.Errorf("unexpected request %s", route)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	p, err := New(map[string]string{"image": "ubuntu:26.04"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := p.Start(ctx, "queue-1"); !isFinal(err, "InvalidRequest") {
+		t.Fatalf("start with an unsupported image left to retry: %v", err)
+	}
+	if _, err := p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-1"}, "true"); !isFinal(err, "NotFound") {
+		t.Fatalf("command in a missing sandbox left to retry: %v", err)
+	}
+}
+
 func TestWorkerRegionAndFailedSandbox(t *testing.T) {
 	var server *httptest.Server
+	deleted := false
 	server = fakeBlaxel(t, func(w http.ResponseWriter, r *http.Request, route string) {
+		if route == "DELETE /v0/sandboxes/temporal-1" {
+			deleted = true
+			fmt.Fprint(w, sandboxJSON(server, "temporal-1", "DELETING"))
+			return
+		}
 		var created map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&created)
 		if route != "POST /v0/sandboxes" || created["spec"].(map[string]any)["region"] != "eu-lon-1" {
@@ -402,8 +436,8 @@ func TestWorkerRegionAndFailedSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status, err := p.Start(context.Background(), "queue-1"); err == nil {
-		t.Fatalf("failed sandbox returned: %v", status)
+	if status, err := p.Start(context.Background(), "queue-1"); !isFinal(err, "SandboxFailed") || !deleted {
+		t.Fatalf("failed sandbox returned, left to retry or left behind: deleted=%t status=%v err=%v", deleted, status, err)
 	}
 }
 
