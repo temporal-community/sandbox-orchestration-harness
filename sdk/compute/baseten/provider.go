@@ -82,7 +82,7 @@ const maxResult = 3 << 19 // 1.5 MiB
 func (p *provider) String() string { return "baseten provider" }
 
 func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.ProviderStatus, err error) {
-	defer finalAuthError(&err)
+	defer finalClientError(&err)
 	if taskQueueName == "" {
 		return nil, fmt.Errorf("baseten: task queue is required")
 	}
@@ -105,7 +105,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.
 }
 
 func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) (err error) {
-	defer finalAuthError(&err)
+	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func (p *provider) DeleteSnapshot(context.Context, *compute.ProviderSnapshot) er
 }
 
 func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (_ *compute.CommandResult, err error) {
-	defer finalAuthError(&err)
+	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {
 		return nil, err
@@ -183,13 +183,14 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	// The logs return a bounded tail of each stream. Partial output is not the
 	// command's output, and a retry would only find the same output again.
 	if strings.HasPrefix(logs.Stdout, truncated) || strings.HasPrefix(logs.Stderr, truncated) {
-		return nil, fmt.Errorf("baseten: command output truncated; refusing to report incomplete output: %w", errors.ErrUnsupported)
+		return nil, temporal.NewNonRetryableApplicationError("baseten: command output truncated; refusing to report incomplete output", "OutputTooLarge", nil)
 	}
 	result := &compute.CommandResult{Stdout: logs.Stdout, Stderr: logs.Stderr, ExitCode: int32(process.ExitCode)}
 	// JSON escapes control characters, invalid UTF-8 and <, > and & to six bytes
 	// each, so measure the result as Temporal will record it.
 	if encoded, _ := json.Marshal(result); len(encoded) > maxResult {
-		return nil, fmt.Errorf("baseten: command output is %d bytes as an activity result, over the %d-byte limit: %w", len(encoded), maxResult, errors.ErrUnsupported)
+		message := fmt.Sprintf("baseten: command output is %d bytes as an activity result, over the %d-byte limit", len(encoded), maxResult)
+		return nil, temporal.NewNonRetryableApplicationError(message, "OutputTooLarge", nil)
 	}
 	return result, nil
 }
@@ -235,7 +236,16 @@ func startOnce(ctx context.Context, processes *sandbox.ProcessService, request s
 func (p *provider) waitDeployed(ctx context.Context, info *sandbox.Info) (*compute.ProviderStatus, error) {
 	for info.Status != sandbox.StatusDeployed {
 		switch info.Status {
-		case sandbox.StatusFailed, sandbox.StatusTerminated, sandbox.StatusDeleting:
+		case sandbox.StatusFailed, sandbox.StatusTerminated:
+			// A retry would get the same sandbox back under the same name, and
+			// the workflow only stops a sandbox that started, so delete it here.
+			if _, err := p.client.Delete(ctx, sandbox.DeleteOptions{Name: info.Name}); err != nil && !isStatus(err, http.StatusNotFound) {
+				return nil, fmt.Errorf("baseten: delete %s sandbox: %w", info.Status, err)
+			}
+			message := fmt.Sprintf("baseten: sandbox %s is %s", info.Name, info.Status)
+			return nil, temporal.NewNonRetryableApplicationError(message, "SandboxFailed", nil)
+		case sandbox.StatusDeleting:
+			// An earlier sandbox under this name is going away: retry once it has.
 			return nil, fmt.Errorf("baseten: sandbox %s is %s", info.Name, info.Status)
 		}
 		select {
@@ -251,12 +261,22 @@ func (p *provider) waitDeployed(ctx context.Context, info *sandbox.Info) (*compu
 	return &compute.ProviderStatus{InstanceID: info.Name}, nil
 }
 
-// finalAuthError makes a rejected API key final: retrying it only hangs the
-// workflow.
-func finalAuthError(err *error) {
-	if *err != nil && (isStatus(*err, http.StatusUnauthorized) || isStatus(*err, http.StatusForbidden)) {
-		*err = temporal.NewNonRetryableApplicationError((*err).Error(), "Unauthorized", *err)
+// finalClientError makes a request Baseten rejects final, such as a rejected
+// API key, a misspelled image or region, or a sandbox that is gone: retrying it
+// only hangs the workflow.
+func finalClientError(err *error) {
+	var e *sandbox.APIError
+	if *err == nil || !errors.As(*err, &e) || e.Status < 400 || e.Status >= 500 || transient(e) || e.Status == http.StatusConflict {
+		return
 	}
+	errType := "InvalidRequest"
+	switch e.Status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		errType = "Unauthorized"
+	case http.StatusNotFound:
+		errType = "NotFound"
+	}
+	*err = temporal.NewNonRetryableApplicationError((*err).Error(), errType, *err)
 }
 
 // transient reports whether a request may succeed if sent again.

@@ -184,9 +184,10 @@ func TestCommandRunsOncePerActivity(t *testing.T) {
 		case name != "" && route == "GET /sbx/process/"+name:
 			switch polls++; polls {
 			case 2:
-				// The first attempt fails while the command keeps running.
-				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"error":"bad request"}`)
+				// The first attempt fails with an error Temporal retries while
+				// the command keeps running.
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, `{"error":"conflict"}`)
 			case 4:
 				fmt.Fprintf(w, `{"name":%q,"status":"completed","exitCode":3}`, name)
 			default:
@@ -262,10 +263,10 @@ func TestNothingRepeatedOrPartial(t *testing.T) {
 	if _, err := p.ExecuteCommand(ctx, status, "make deploy"); err == nil || len(commands) != 1 {
 		t.Fatalf("command must be sent once and left to Temporal's retry: commands=%v err=%v", commands, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000"); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "truncated") || polls != 2 {
+	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "truncated") || polls != 2 {
 		t.Fatalf("truncated output returned: polls=%d result=%+v err=%v", polls, result, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "cat page.html"); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "limit") {
+	if result, err := p.ExecuteCommand(ctx, status, "cat page.html"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("output over Temporal's payload limit returned: result=%t err=%v", result != nil, err)
 	}
 	if result, err := p.ExecuteCommand(ctx, status, "sleep 900"); !isFinal(err, "CommandKilled") {
@@ -299,15 +300,49 @@ func TestRejectedCredentialsAreFinal(t *testing.T) {
 
 func TestFailedSandbox(t *testing.T) {
 	var server *httptest.Server
+	deleted := false
 	p, server := fakeBaseten(t, map[string]string{"team-id": "team-1"}, func(w http.ResponseWriter, r *http.Request, route string) {
-		if route != "POST /v1/sandboxes/instances" || r.URL.Query().Get("team_id") != "team-1" {
-			t.Errorf("unexpected request %s?%s", route, r.URL.RawQuery)
+		if r.URL.Query().Get("team_id") != "team-1" {
+			t.Errorf("request without the team %s?%s", route, r.URL.RawQuery)
 		}
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, sandboxJSON(server, "temporal-1", "FAILED"))
+		switch route {
+		case "POST /v1/sandboxes/instances":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, sandboxJSON(server, "temporal-1", "FAILED"))
+		case "DELETE /v1/sandboxes/instances/temporal-1":
+			deleted = true
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, sandboxJSON(server, "temporal-1", "DELETING"))
+		default:
+			t.Errorf("unexpected request %s", route)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	})
-	if status, err := p.Start(context.Background(), "queue-1"); err == nil {
-		t.Fatalf("failed sandbox returned: %v", status)
+	if status, err := p.Start(context.Background(), "queue-1"); !isFinal(err, "SandboxFailed") || !deleted {
+		t.Fatalf("failed sandbox returned, left to retry or kept: deleted=%t status=%v err=%v", deleted, status, err)
+	}
+}
+
+func TestRejectedRequestsAreFinal(t *testing.T) {
+	p, _ := fakeBaseten(t, map[string]string{"image": "no/such-image"}, func(w http.ResponseWriter, r *http.Request, route string) {
+		switch route {
+		case "POST /v1/sandboxes/instances":
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"bad_request","message":"unknown image"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"not_found","message":"sandbox not found"}`)
+		}
+	})
+	ctx := context.Background()
+	if _, err := p.Start(ctx, "queue-1"); !isFinal(err, "InvalidRequest") {
+		t.Fatalf("start with a bad image left to retry: %v", err)
+	}
+	if _, err := p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-gone"}, "true"); !isFinal(err, "NotFound") {
+		t.Fatalf("command in a missing sandbox left to retry: %v", err)
+	}
+	if err := p.Stop(ctx, &compute.ProviderStatus{InstanceID: "temporal-gone"}); err != nil {
+		t.Fatalf("stopping a missing sandbox: %v", err)
 	}
 }
 

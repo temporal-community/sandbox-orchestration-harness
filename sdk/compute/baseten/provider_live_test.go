@@ -103,7 +103,7 @@ func TestBasetenLive(t *testing.T) {
 		"head -c 2500000 /dev/zero | tr '\\0' x": "limit",
 		"head -c 5000000 /dev/zero | tr '\\0' x": "truncated",
 	} {
-		if result, err := p.ExecuteCommand(ctx, status, command); !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), reason) {
+		if result, err := p.ExecuteCommand(ctx, status, command); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), reason) {
 			t.Fatalf("oversized output: %s: err=%v", command, err)
 		} else if result != nil {
 			t.Fatalf("oversized output returned %d bytes", len(result.Stdout))

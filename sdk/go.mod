@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/service/bedrockagentcore v1.22.0
+	github.com/basetenlabs/baseten-go v0.6.0
 	github.com/crafting-demo/lightweight-go-client v0.0.0-20260818190824-9f09408822e9
 	github.com/daytonaio/daytona/libs/sdk-go v0.170.0
 	github.com/e2b-dev/infra/packages/shared v0.0.0-20260427142859-74ceb52ae040
@@ -37,7 +38,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.20 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.0 // indirect
 	github.com/aws/smithy-go v1.25.0 // indirect
-	github.com/basetenlabs/baseten-go v0.6.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

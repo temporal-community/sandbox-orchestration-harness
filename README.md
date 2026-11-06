@@ -281,14 +281,16 @@ Commands run from the activity worker through the sandbox's HTTP API, so the
 image does not need a Temporal worker. Each command takes about 0.5 s longer
 than it runs. A command runs once per activity: a retried attempt waits for the
 process its first attempt started instead of starting another. A command still
-running at the activity's timeout is killed and fails without a retry, as does
-any operation whose API key Baseten rejects.
+running at the activity's timeout is killed and fails without a retry. A
+request Baseten rejects (an API key it refuses, an unknown image or region, a
+sandbox that is gone) also fails without a retry, and a sandbox that fails to
+start is deleted and fails `Start` without a retry.
 
-Output is read from the sandbox's process logs. A command fails with
-`ErrUnsupported` rather than return part of its output when the output is over
-1.5 MB as the activity's result (as Temporal encodes it: JSON turns `<`, `>`,
-`&` and control characters into six bytes each; Temporal's default payload
-limit is 2 MB), or over what the logs return. The provider sets
+Output is read from the sandbox's process logs. A command fails without a
+retry, with error type `OutputTooLarge`, rather than return part of its output
+when the output is over 1.5 MiB as the activity's result (as Temporal encodes
+it: JSON turns `<`, `>`, `&` and control characters into six bytes each;
+Temporal's default payload limit is 2 MiB), or over what the logs return. The provider sets
 `SANDBOX_DISABLE_PROCESS_LOGGING=true` in its sandboxes, so command output does
 not appear in the sandbox's runtime logs: copying it there line by line makes
 60,000 short lines take about 100 s instead of under 1 s.
