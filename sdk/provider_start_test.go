@@ -30,49 +30,49 @@ import (
 
 // This fake owns its workload configuration and idempotency. The SDK only
 // transports provider configuration through the existing lifecycle Activities.
-type nativeLaunch struct {
+type processLaunch struct {
 	Queue   string
 	Config  map[string]string
 	Attempt int32
 }
 
-type nativeResource struct {
+type processResource struct {
 	ID     string
 	Output string
 }
 
-type nativeBoundary struct {
+type processBoundary struct {
 	mu             sync.Mutex
-	Starts         []nativeLaunch
-	Resources      map[string]nativeResource
+	Starts         []processLaunch
+	Resources      map[string]processResource
 	Stops          []string
 	LoseFirstReply bool
 }
 
-type nativeProvider struct {
-	boundary *nativeBoundary
+type processProvider struct {
+	boundary *processBoundary
 	config   map[string]string
 }
 
-var _ compute.Provider = (*nativeProvider)(nil)
+var _ compute.Provider = (*processProvider)(nil)
 
-func registerNativeBoundary(b *nativeBoundary) compute.ProviderType {
-	typ := compute.ProviderType("native-process-test-" + uuid.NewString())
-	b.Resources = make(map[string]nativeResource)
+func registerProcessBoundary(b *processBoundary) compute.ProviderType {
+	typ := compute.ProviderType("process-test-" + uuid.NewString())
+	b.Resources = make(map[string]processResource)
 	compute.Register(typ, func(config map[string]string) (compute.Provider, error) {
-		if config["workload"] != "printf native-process" {
-			return nil, fmt.Errorf("workload must select the supported native process")
+		if config["workload"] != "printf process-output" {
+			return nil, fmt.Errorf("workload must select the supported process")
 		}
-		return &nativeProvider{boundary: b, config: maps.Clone(config)}, nil
+		return &processProvider{boundary: b, config: maps.Clone(config)}, nil
 	})
 	return typ
 }
 
-func (p *nativeProvider) Start(ctx context.Context, queue string) (*compute.ProviderStatus, error) {
+func (p *processProvider) Start(ctx context.Context, queue string) (*compute.ProviderStatus, error) {
 	p.boundary.mu.Lock()
 	defer p.boundary.mu.Unlock()
 	b := p.boundary
-	b.Starts = append(b.Starts, nativeLaunch{Queue: queue, Config: maps.Clone(p.config), Attempt: activity.GetInfo(ctx).Attempt})
+	b.Starts = append(b.Starts, processLaunch{Queue: queue, Config: maps.Clone(p.config), Attempt: activity.GetInfo(ctx).Attempt})
 	resource, exists := b.Resources[queue]
 	if !exists {
 		// Launch a bounded ordinary process, with no Temporal Worker or polling.
@@ -80,7 +80,7 @@ func (p *nativeProvider) Start(ctx context.Context, queue string) (*compute.Prov
 		if err != nil {
 			return nil, err
 		}
-		resource = nativeResource{ID: "resource-" + queue, Output: string(out)}
+		resource = processResource{ID: "resource-" + queue, Output: string(out)}
 		b.Resources[queue] = resource
 		if b.LoseFirstReply {
 			return nil, errors.New("simulated lost allocation reply")
@@ -89,35 +89,35 @@ func (p *nativeProvider) Start(ctx context.Context, queue string) (*compute.Prov
 	return &compute.ProviderStatus{InstanceID: resource.ID}, nil
 }
 
-func (p *nativeProvider) Stop(_ context.Context, status *compute.ProviderStatus) error {
+func (p *processProvider) Stop(_ context.Context, status *compute.ProviderStatus) error {
 	p.boundary.mu.Lock()
 	defer p.boundary.mu.Unlock()
 	p.boundary.Stops = append(p.boundary.Stops, status.InstanceID)
 	return nil
 }
-func (p *nativeProvider) ExecuteCommand(_ context.Context, status *compute.ProviderStatus, command string) (*compute.CommandResult, error) {
+func (p *processProvider) ExecuteCommand(_ context.Context, status *compute.ProviderStatus, command string) (*compute.CommandResult, error) {
 	p.boundary.mu.Lock()
 	defer p.boundary.mu.Unlock()
 	for _, resource := range p.boundary.Resources {
-		if resource.ID == status.InstanceID && command == "read-native-output" {
+		if resource.ID == status.InstanceID && command == "read-process-output" {
 			return &compute.CommandResult{Stdout: resource.Output}, nil
 		}
 	}
 	return nil, errors.New("unknown resource or command")
 }
-func (*nativeProvider) Suspend(context.Context, *compute.ProviderStatus) error {
+func (*processProvider) Suspend(context.Context, *compute.ProviderStatus) error {
 	return errors.ErrUnsupported
 }
-func (*nativeProvider) Resume(context.Context, *compute.ProviderStatus) error {
+func (*processProvider) Resume(context.Context, *compute.ProviderStatus) error {
 	return errors.ErrUnsupported
 }
-func (*nativeProvider) Snapshot(context.Context, *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
+func (*processProvider) Snapshot(context.Context, *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
 	return compute.SandboxPostSnapshotRunning, nil, errors.ErrUnsupported
 }
-func (*nativeProvider) StartFromSnapshot(context.Context, string, *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
+func (*processProvider) StartFromSnapshot(context.Context, string, *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
 	return nil, errors.ErrUnsupported
 }
-func (*nativeProvider) DeleteSnapshot(context.Context, *compute.ProviderSnapshot) error {
+func (*processProvider) DeleteSnapshot(context.Context, *compute.ProviderSnapshot) error {
 	return errors.ErrUnsupported
 }
 
@@ -132,10 +132,10 @@ func startActivityWorkflow(ctx workflow.Context, input controller.StartSandboxIn
 }
 
 func TestExistingStartRetriesPreserveProviderConfiguration(t *testing.T) {
-	b := &nativeBoundary{LoseFirstReply: true}
-	typ := registerNativeBoundary(b)
+	b := &processBoundary{LoseFirstReply: true}
+	typ := registerProcessBoundary(b)
 	input := controller.StartSandboxInput{Provider: compute.ProviderDetails{Type: typ, Config: map[string]string{
-		"workload": "printf native-process", "provider-owned-extra": "preserved",
+		"workload": "printf process-output", "provider-owned-extra": "preserved",
 	}}, TaskQueueName: "stable-resource-identity"}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -157,16 +157,16 @@ func TestExistingStartRetriesPreserveProviderConfiguration(t *testing.T) {
 		}
 	}
 	resource := b.Resources[input.TaskQueueName]
-	if resource.Output != "native-process" || output.Status == nil || output.Status.InstanceID != resource.ID {
-		t.Fatalf("native process result=%+v status=%+v", resource, output.Status)
+	if resource.Output != "process-output" || output.Status == nil || output.Status.InstanceID != resource.ID {
+		t.Fatalf("process result=%+v status=%+v", resource, output.Status)
 	}
 }
 
 func TestExistingStartRejectsInvalidProviderBeforeAllocation(t *testing.T) {
 	for _, name := range []string{"unknown", "missing-workload", "invalid-workload"} {
 		t.Run(name, func(t *testing.T) {
-			b := &nativeBoundary{}
-			typ := registerNativeBoundary(b)
+			b := &processBoundary{}
+			typ := registerProcessBoundary(b)
 			config := map[string]string{}
 			if name == "unknown" {
 				typ = compute.ProviderType(uuid.NewString())
@@ -234,7 +234,7 @@ func TestExistingSandboxRegistrationContract(t *testing.T) {
 }
 
 func TestExistingSandboxWireShapes(t *testing.T) {
-	provider := compute.ProviderDetails{Type: "fake", Config: map[string]string{"workload": "native"}}
+	provider := compute.ProviderDetails{Type: "fake", Config: map[string]string{"workload": "process"}}
 	status := &compute.ProviderStatus{InstanceID: "resource"}
 	snapshot := &compute.ProviderSnapshot{SnapshotID: "snapshot"}
 	for _, tc := range []struct {
@@ -242,17 +242,17 @@ func TestExistingSandboxWireShapes(t *testing.T) {
 		value any
 		want  string
 	}{
-		{"init", controller.SandboxInitInput{ComputeProvider: provider}, `{"compute_provider":{"type":"fake","config":{"workload":"native"}},"idle_timeout":0,"snapshot":null}`},
-		{"start", controller.StartSandboxInput{Provider: provider, TaskQueueName: "stable"}, `{"provider":{"type":"fake","config":{"workload":"native"}},"task_queue_name":"stable"}`},
+		{"init", controller.SandboxInitInput{ComputeProvider: provider}, `{"compute_provider":{"type":"fake","config":{"workload":"process"}},"idle_timeout":0,"snapshot":null}`},
+		{"start", controller.StartSandboxInput{Provider: provider, TaskQueueName: "stable"}, `{"provider":{"type":"fake","config":{"workload":"process"}},"task_queue_name":"stable"}`},
 		{"start-output", controller.StartSandboxOutput{Status: status}, `{"status":{"instance_id":"resource"}}`},
-		{"stop", controller.StopSandboxInput{Provider: provider, Status: status}, `{"provider":{"type":"fake","config":{"workload":"native"}},"status":{"instance_id":"resource"}}`},
+		{"stop", controller.StopSandboxInput{Provider: provider, Status: status}, `{"provider":{"type":"fake","config":{"workload":"process"}},"status":{"instance_id":"resource"}}`},
 		{"snapshot-output", controller.SnapshotSandboxOutput{SandboxState: compute.SandboxPostSnapshotRunning, Snapshot: snapshot}, `{"sandbox_state":0,"snapshot":{"snapshot_id":"snapshot"}}`},
-		{"snapshot-start", controller.StartSandboxFromSnapshotInput{Provider: provider, TaskQueueName: "stable", Snapshot: snapshot}, `{"provider":{"type":"fake","config":{"workload":"native"}},"task_queue_name":"stable","snapshot":{"snapshot_id":"snapshot"}}`},
+		{"snapshot-start", controller.StartSandboxFromSnapshotInput{Provider: provider, TaskQueueName: "stable", Snapshot: snapshot}, `{"provider":{"type":"fake","config":{"workload":"process"}},"task_queue_name":"stable","snapshot":{"snapshot_id":"snapshot"}}`},
 		{"snapshot-start-output", controller.StartSandboxFromSnapshotOutput{Status: status}, `{"status":{"instance_id":"resource"}}`},
-		{"delete-snapshot", controller.DeleteSnapshotInput{Provider: provider, Snapshot: snapshot}, `{"provider":{"type":"fake","config":{"workload":"native"}},"snapshot":{"snapshot_id":"snapshot"}}`},
-		{"state", controller.SandboxState{Lifecycle: controller.SandboxLifecycleRunning, ComputeProvider: &provider, Status: status}, `{"lifecycle":1,"compute_provider":{"type":"fake","config":{"workload":"native"}},"status":{"instance_id":"resource"},"idle_timeout":0}`},
+		{"delete-snapshot", controller.DeleteSnapshotInput{Provider: provider, Snapshot: snapshot}, `{"provider":{"type":"fake","config":{"workload":"process"}},"snapshot":{"snapshot_id":"snapshot"}}`},
+		{"state", controller.SandboxState{Lifecycle: controller.SandboxLifecycleRunning, ComputeProvider: &provider, Status: status}, `{"lifecycle":1,"compute_provider":{"type":"fake","config":{"workload":"process"}},"status":{"instance_id":"resource"},"idle_timeout":0}`},
 		{"local-state", controller.SandboxLocalState{WorkflowID: "parent", RunID: "run"}, `{"workflow_id":"parent","run_id":"run","compute_provider":null,"status":null,"idle_timeout":0}`},
-		{"send-init", sandbox.SendSandboxInitInput{SandboxID: "sandbox", UpdateID: "update", ComputeProvider: provider}, `{"SandboxID":"sandbox","UpdateID":"update","ComputeProvider":{"type":"fake","config":{"workload":"native"}},"IdleTimeout":0,"Snapshot":null}`},
+		{"send-init", sandbox.SendSandboxInitInput{SandboxID: "sandbox", UpdateID: "update", ComputeProvider: provider}, `{"SandboxID":"sandbox","UpdateID":"update","ComputeProvider":{"type":"fake","config":{"workload":"process"}},"IdleTimeout":0,"Snapshot":null}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := json.Marshal(tc.value)
@@ -321,9 +321,9 @@ func TestExistingSandboxOptionsForwardedUnchanged(t *testing.T) {
 }
 
 func TestExistingControllerSnapshotStartRouting(t *testing.T) {
-	b := &nativeBoundary{}
-	typ := registerNativeBoundary(b)
-	provider := compute.ProviderDetails{Type: typ, Config: map[string]string{"workload": "printf native-process", "opaque": "retained"}}
+	b := &processBoundary{}
+	typ := registerProcessBoundary(b)
+	provider := compute.ProviderDetails{Type: typ, Config: map[string]string{"workload": "printf process-output", "opaque": "retained"}}
 	snapshot := &compute.ProviderSnapshot{SnapshotID: "existing-snapshot"}
 	status := &compute.ProviderStatus{InstanceID: "snapshot-resource"}
 	var suite testsuite.WorkflowTestSuite

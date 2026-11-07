@@ -167,7 +167,7 @@ func TestReceivingActivityPolicyBeforeConstruction(t *testing.T) {
 	}
 }
 
-func TestControllerInitRetainsResolvedPolicyAndConfiguration(t *testing.T) {
+func TestControllerInitRetainsResolvedPolicy(t *testing.T) {
 	provider, calls := registerTestPolicy(t)
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -180,9 +180,8 @@ func TestControllerInitRetainsResolvedPolicyAndConfiguration(t *testing.T) {
 		if err := controller.handleInit(ctx, input); err != nil {
 			return "", err
 		}
-		input.ComputeProvider.Config["lifecycle"] = ""
 		if controller.policy.Lifecycle != compute.LifecycleFresh || controller.state.ComputeProvider.Config["lifecycle"] != "fresh" || controller.state.IdleTimeout != compute.NoIdleTimeout || controller.lifecycle != sandboxRunning {
-			return "", errors.New("controller lost resolved policy or copied configuration")
+			return "", errors.New("controller lost resolved policy or configuration")
 		}
 		if err := controller.validateSnapshot(struct{}{}); err == nil || !strings.Contains(err.Error(), "does not support snapshot") {
 			return "", fmt.Errorf("retained snapshot policy = %v", err)

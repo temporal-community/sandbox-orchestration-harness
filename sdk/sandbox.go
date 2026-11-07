@@ -275,9 +275,11 @@ func NewSandbox(ctx workflow.Context, sandboxProvider Provider, opts ...SandboxO
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: provider policy: %w", err)
 	}
-	if err := policy.ValidateInitial(cfg.idleTimeout, cfg.snapshot); err != nil {
+	if err := policy.ValidateInitial(compute.InitialOptions{IdleTimeout: cfg.idleTimeout, Snapshot: cfg.snapshot}); err != nil {
 		return nil, fmt.Errorf("sandbox: initial policy: %w", err)
 	}
+	// start yields before it sends the configuration; the copy keeps the validated
+	// configuration from changing if the caller mutates its map meanwhile.
 	sandboxProvider.Config = maps.Clone(sandboxProvider.Config)
 
 	encodedSandboxId := workflow.SideEffect(ctx, func(ctx workflow.Context) any { return uuid.New().String() })

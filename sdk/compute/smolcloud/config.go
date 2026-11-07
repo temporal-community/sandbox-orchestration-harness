@@ -3,7 +3,6 @@ package smolcloud
 import (
 	"fmt"
 	"net/netip"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -11,13 +10,11 @@ import (
 )
 
 const (
-	// ConfigKeyWorkload selects a workload preset.
-	ConfigKeyWorkload = "workload"
-	// ConfigKeyBootstrap selects Worker task queue injection into the guest environment.
+	// ConfigKeyBootstrap selects whether the guest receives Worker bootstrap: worker (default) or none.
 	ConfigKeyBootstrap = "bootstrap"
-	// ConfigKeyLifecycle selects the execution lifecycle policy.
+	// ConfigKeyLifecycle selects the execution lifecycle policy: standard (default) or fresh.
 	ConfigKeyLifecycle = "lifecycle"
-	// ConfigKeyBranchable controls checkpoint creation and restore support.
+	// ConfigKeyBranchable controls checkpoint support: true (default) or false. Fresh lifecycle requires false.
 	ConfigKeyBranchable = "branchable"
 )
 
@@ -28,82 +25,65 @@ const (
 	bootstrapNone   bootstrapMode = "none"
 )
 
-// resolvedConfig keeps bootstrap, lifecycle, and API capabilities independent.
+// resolvedConfig holds the validated provider configuration.
 type resolvedConfig struct {
-	bootstrap              bootstrapMode
-	policy                 compute.ExecutionPolicy
-	branchable             bool
-	bound                  bool
-	preset                 bool
+	bootstrap bootstrapMode
+	policy    compute.ExecutionPolicy
+	// bindConfiguration is true when the configuration sets bootstrap, lifecycle or branchable.
+	// Such machines carry a configuration label, and retries adopt only a single machine whose
+	// label matches. Configurations without these settings keep the original request and adoption.
+	bindConfiguration      bool
 	image, network         string
 	cidrs, hosts           []string
 	cpus, memoryMB, diskGB int
 }
 
-// resolveConfig is pure: Workflow admission and provider construction share validation.
+// resolvePolicy reads only the lifecycle and branchable settings. It runs in Workflow code,
+// so other configuration errors surface from the constructor inside the start Activity.
+func resolvePolicy(config map[string]string) (compute.ExecutionPolicy, error) {
+	var policy compute.ExecutionPolicy
+	if raw, ok := config[ConfigKeyLifecycle]; ok {
+		switch raw {
+		case "standard":
+			policy.Lifecycle = compute.LifecycleStandard
+		case "fresh":
+			policy.Lifecycle = compute.LifecycleFresh
+		default:
+			return policy, fmt.Errorf("smol-cloud: lifecycle must be standard or fresh")
+		}
+	}
+	policy.NoBranching = policy.Lifecycle == compute.LifecycleFresh
+	if raw, ok := config[ConfigKeyBranchable]; ok {
+		if raw != "true" && raw != "false" {
+			return policy, fmt.Errorf("smol-cloud: branchable must be true or false")
+		}
+		policy.NoBranching = raw == "false"
+		if !policy.NoBranching && policy.Lifecycle == compute.LifecycleFresh {
+			return policy, fmt.Errorf("smol-cloud: fresh lifecycle requires branchable=false")
+		}
+	}
+	return policy, nil
+}
+
+// resolveConfig validates the complete configuration for the constructor. It reuses
+// resolvePolicy so Workflow admission and the provider apply the same policy.
 func resolveConfig(config map[string]string) (resolvedConfig, error) {
-	c := resolvedConfig{bootstrap: bootstrapWorker, branchable: true, cpus: 1, memoryMB: 512}
-	switch config[ConfigKeyWorkload] {
-	case "":
-	case "native-process":
-		c.preset, c.bound = true, true
-		c.bootstrap, c.policy.Lifecycle, c.branchable = bootstrapNone, compute.LifecycleFresh, false
-	default:
-		return c, fmt.Errorf("smol-cloud: unsupported workload %q", config[ConfigKeyWorkload])
+	c := resolvedConfig{bootstrap: bootstrapWorker, cpus: 1, memoryMB: 512}
+	policy, err := resolvePolicy(config)
+	if err != nil {
+		return c, err
+	}
+	c.policy = policy
+	for _, key := range []string{ConfigKeyBootstrap, ConfigKeyLifecycle, ConfigKeyBranchable} {
+		if _, ok := config[key]; ok {
+			c.bindConfiguration = true
+		}
 	}
 	if raw, ok := config[ConfigKeyBootstrap]; ok {
-		c.bound = true
 		if raw != string(bootstrapWorker) && raw != string(bootstrapNone) {
 			return c, fmt.Errorf("smol-cloud: bootstrap must be worker or none")
 		}
-		if c.preset && raw != string(bootstrapNone) {
-			return c, fmt.Errorf("smol-cloud: bootstrap contradicts native-process preset")
-		}
 		c.bootstrap = bootstrapMode(raw)
-	}
-	if raw, ok := config[ConfigKeyLifecycle]; ok {
-		c.bound = true
-		switch raw {
-		case "standard":
-			if c.preset {
-				return c, fmt.Errorf("smol-cloud: lifecycle contradicts native-process preset")
-			}
-			c.policy.Lifecycle = compute.LifecycleStandard
-		case "fresh":
-			c.policy.Lifecycle = compute.LifecycleFresh
-		default:
-			return c, fmt.Errorf("smol-cloud: lifecycle must be standard or fresh")
-		}
-	}
-	if c.policy.Lifecycle == compute.LifecycleFresh {
-		c.branchable = false
-	}
-	if raw, ok := config[ConfigKeyBranchable]; ok {
-		c.bound = true
-		if raw != "true" && raw != "false" {
-			return c, fmt.Errorf("smol-cloud: branchable must be true or false")
-		}
-		c.branchable = raw == "true"
-		if c.branchable && c.policy.Lifecycle == compute.LifecycleFresh {
-			return c, fmt.Errorf("smol-cloud: fresh lifecycle requires branchable=false")
-		}
-	}
-	if c.preset || c.policy.Lifecycle == compute.LifecycleFresh {
-		keys := make([]string, 0, len(config))
-		for key := range config {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		for _, key := range keys {
-			switch key {
-			case ConfigKeyWorkload, ConfigKeyBootstrap, ConfigKeyLifecycle, ConfigKeyBranchable, "image", "network", "allow-cidrs", "allow-hosts", "cpus", "memory-mb", "disk-gb":
-			default:
-				if c.preset {
-					return c, fmt.Errorf("smol-cloud: unsupported native-process configuration key %q", key)
-				}
-				return c, fmt.Errorf("smol-cloud: unsupported fresh lifecycle configuration key %q", key)
-			}
-		}
 	}
 	c.image = strings.TrimSpace(config["image"])
 	if c.image == "" {
@@ -152,9 +132,4 @@ func resolveConfig(config map[string]string) (resolvedConfig, error) {
 		*dst = int(v)
 	}
 	return c, nil
-}
-
-func resolvePolicy(config map[string]string) (compute.ExecutionPolicy, error) {
-	c, err := resolveConfig(config)
-	return c.policy, err
 }

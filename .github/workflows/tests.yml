@@ -72,12 +72,13 @@ jobs:
           from pathlib import Path
 
           required = {
-              "TestLocalNativeProcessHistory/default-idle",
-              "TestLocalNativeProcessHistory/no-idle-timeout",
-              "TestLocalNativeProcessHistory/fresh-policy",
+              "TestLocalProcessWithoutWorkerHistory/default-idle",
+              "TestLocalProcessWithoutWorkerHistory/no-idle-timeout",
+              "TestLocalProcessWithoutWorkerHistory/fresh-policy",
               "TestLocalPublicSandboxRejectsInvalidProviderBeforeAllocation",
               "TestRetainedBaselineReplay/baseline-parent.json",
               "TestRetainedBaselineReplay/baseline-controller.json",
+              "TestRetainedSmolCloudBaselineReplay",
           }
           package = "github.com/temporal-community/sandbox-orchestration-harness/sdk"
           passed = set()

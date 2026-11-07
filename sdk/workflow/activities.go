@@ -20,6 +20,8 @@ func wrapProviderConfig(err error) error {
 }
 
 // lookupProvider checks configuration policy before constructing the provider.
+// Activities are registered entry points that other Workflows and retries can call
+// directly, so they enforce the policy independently of the controller.
 func lookupProvider(details compute.ProviderDetails, operation compute.Operation) (compute.Provider, error) {
 	policy, err := compute.ResolvePolicy(details)
 	if err != nil {

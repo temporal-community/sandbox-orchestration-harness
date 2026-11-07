@@ -3,6 +3,8 @@ package smolcloud_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +34,7 @@ func startActivityWorkflow(ctx workflow.Context, input controller.StartSandboxIn
 	return output, err
 }
 
-func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
+func TestSmolCloudFreshExistingActivityRetry(t *testing.T) {
 	var requests [][]byte
 	var record struct {
 		Name   string            `json:"name"`
@@ -73,7 +76,7 @@ func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
 	t.Setenv("SMOL_CLOUD_URL", server.URL)
 	t.Setenv("SMOL_CLOUD_TOKEN", "outside-only")
 	input := controller.StartSandboxInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: map[string]string{
-		smolcloud.ConfigKeyWorkload: "native-process", "image": "example/native@sha256:def", "cpus": "2", "memory-mb": "1024", "disk-gb": "4", "network": "allowCidrs", "allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "registry-z.example,registry-a.example",
+		smolcloud.ConfigKeyBootstrap: "none", smolcloud.ConfigKeyLifecycle: "fresh", "image": "example/process@sha256:def", "cpus": "2", "memory-mb": "1024", "disk-gb": "4", "network": "allowCidrs", "allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "registry-z.example,registry-a.example",
 	}}, TaskQueueName: "activity-queue"}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -93,10 +96,13 @@ func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
 	if err := json.Unmarshal(requests[0], &body); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(body["resources"], map[string]any{"cpus": float64(2), "memoryMb": float64(1024), "diskGb": float64(4)}) || !reflect.DeepEqual(body["env"], map[string]any{}) || body["branchable"] != false || !reflect.DeepEqual(body["source"], map[string]any{"type": "image", "reference": "example/native@sha256:def"}) || !reflect.DeepEqual(body["network"], map[string]any{"mode": "allowCidrs", "cidrs": []any{"198.51.100.0/24", "192.0.2.0/24"}, "hosts": []any{"registry-z.example", "registry-a.example"}}) {
+	if !reflect.DeepEqual(body["resources"], map[string]any{"cpus": float64(2), "memoryMb": float64(1024), "diskGb": float64(4)}) || !reflect.DeepEqual(body["env"], map[string]any{}) || body["branchable"] != false || !reflect.DeepEqual(body["source"], map[string]any{"type": "image", "reference": "example/process@sha256:def"}) || !reflect.DeepEqual(body["network"], map[string]any{"mode": "allowCidrs", "cidrs": []any{"198.51.100.0/24", "192.0.2.0/24"}, "hosts": []any{"registry-z.example", "registry-a.example"}}) {
 		t.Fatalf("configured create: %v", body)
 	}
-	wantLabels := map[string]string{"temporal-harness": "smol-cloud", "temporal-harness-config": "9b3efd070c67c937853ea94288785210a4174a96d299eed593742eb920a28602"}
+	// Literal wire encoding fixes the binding independently of the production types.
+	binding := `{"Version":2,"Queue":"activity-queue","Bootstrap":"none","Lifecycle":"fresh","Branchable":false,"Source":{"type":"image","reference":"example/process@sha256:def"},"Resources":{"cpus":2,"memoryMb":1024,"diskGb":4},"Network":{"mode":"allowCidrs","cidrs":["192.0.2.0/24","198.51.100.0/24"],"hosts":["registry-a.example","registry-z.example"]}}`
+	sum := sha256.Sum256([]byte(binding))
+	wantLabels := map[string]string{"temporal-harness": "smol-cloud", "temporal-harness-config": hex.EncodeToString(sum[:])}
 	if !reflect.DeepEqual(record.Labels, wantLabels) {
 		t.Fatalf("configured binding: %v", record.Labels)
 	}
@@ -110,20 +116,29 @@ func TestSmolCloudNativeExistingActivityRetry(t *testing.T) {
 	}
 }
 
-func TestSmolCloudNativeDirectActivityAdmission(t *testing.T) {
+func TestSmolCloudFreshDirectActivityAdmission(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) }))
 	defer server.Close()
 	t.Setenv("SMOL_CLOUD_URL", server.URL)
 	t.Setenv("SMOL_CLOUD_TOKEN", "outside-only")
-	for _, config := range []map[string]string{{"workload": "unknown", "image": "image"}, {"workload": "native-process"}, {"workload": "native-process", "image": "image", "env": "secret"}, {"workload": "native-process", "image": "image", "cpus": "1099511627776"}, {"workload": "native-process", "image": "image", "memory-mb": "1099511627776"}} {
-		_, err := controller.StartSandbox(context.Background(), controller.StartSandboxInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: config}, TaskQueueName: "queue"})
-		if err == nil {
-			t.Fatalf("accepted configuration: %v", config)
+	for _, tc := range []struct {
+		config     map[string]string
+		diagnostic string
+	}{
+		{map[string]string{"lifecycle": "unknown", "image": "image"}, "lifecycle must be"},
+		{map[string]string{"lifecycle": "fresh", "branchable": "true", "image": "image"}, "fresh lifecycle requires branchable=false"},
+		{map[string]string{"lifecycle": "fresh"}, "image is required"},
+		{map[string]string{"lifecycle": "fresh", "image": "image", "cpus": "1099511627776"}, "cpus must be"},
+		{map[string]string{"lifecycle": "fresh", "image": "image", "memory-mb": "1099511627776"}, "memory-mb must be"},
+	} {
+		_, err := controller.StartSandbox(context.Background(), controller.StartSandboxInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: tc.config}, TaskQueueName: "queue"})
+		if err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
+			t.Fatalf("configuration %v: err=%v, want %q", tc.config, err, tc.diagnostic)
 		}
 	}
-	_, err := controller.StartSandboxFromSnapshot(context.Background(), controller.StartSandboxFromSnapshotInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: map[string]string{"workload": "native-process", "image": "image"}}, TaskQueueName: "queue", Snapshot: &compute.ProviderSnapshot{SnapshotID: "checkpoint"}})
-	if err == nil || calls != 0 {
+	_, err := controller.StartSandboxFromSnapshot(context.Background(), controller.StartSandboxFromSnapshotInput{Provider: compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: map[string]string{"lifecycle": "fresh", "image": "image"}}, TaskQueueName: "queue", Snapshot: &compute.ProviderSnapshot{SnapshotID: "checkpoint"}})
+	if err == nil || !strings.Contains(err.Error(), "fresh lifecycle does not support restore") || calls != 0 {
 		t.Fatalf("direct refusal: err=%v calls=%d", err, calls)
 	}
 }

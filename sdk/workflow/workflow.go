@@ -3,7 +3,6 @@ package workflow
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"time"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
@@ -173,7 +172,7 @@ func (s *sandboxWorkflow) validateInit(inp SandboxInitInput) error {
 	if err != nil {
 		return wrapProviderConfig(err)
 	}
-	return wrapUnsupported(policy.ValidateInitial(inp.IdleTimeout, inp.Snapshot))
+	return wrapUnsupported(policy.ValidateInitial(compute.InitialOptions{IdleTimeout: inp.IdleTimeout, Snapshot: inp.Snapshot}))
 }
 
 func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput) error {
@@ -181,11 +180,10 @@ func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput)
 	if err != nil {
 		return wrapProviderConfig(err)
 	}
-	if err := policy.ValidateInitial(inp.IdleTimeout, inp.Snapshot); err != nil {
+	if err := policy.ValidateInitial(compute.InitialOptions{IdleTimeout: inp.IdleTimeout, Snapshot: inp.Snapshot}); err != nil {
 		return wrapUnsupported(err)
 	}
 	s.policy = policy
-	inp.ComputeProvider.Config = maps.Clone(inp.ComputeProvider.Config)
 	if inp.Snapshot != nil {
 		var out StartSandboxFromSnapshotOutput
 		if err := workflow.ExecuteActivity(

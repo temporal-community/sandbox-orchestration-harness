@@ -31,8 +31,7 @@ func init() {
 
 // New constructs the provider. The image is the only required config value;
 // network defaults to blocked. Use "network": "open" for guest internet.
-// Bootstrap, lifecycle, and branchable are independent settings. The historical
-// workload=native-process preset selects none, fresh, and false respectively.
+// Bootstrap, lifecycle, and branchable are independent settings.
 func New(config map[string]string) (compute.Provider, error) {
 	c, err := resolveConfig(config)
 	if err != nil {
@@ -67,15 +66,16 @@ type provider struct {
 	client         *http.Client
 }
 
-// nativeBinding binds the existing queue identity to the admitted nonsecret request.
-// Preserve this v1 encoding for configurations equivalent to the historical preset.
-type nativeBinding struct {
-	Version   int
-	Queue     string
-	Workload  string
-	Source    machineSource
-	Resources machineResources
-	Network   networkPolicy
+// configurationBinding binds the queue identity to the admitted nonsecret request.
+type configurationBinding struct {
+	Version    int
+	Queue      string
+	Bootstrap  bootstrapMode
+	Lifecycle  compute.LifecyclePolicy
+	Branchable bool
+	Source     machineSource
+	Resources  machineResources
+	Network    networkPolicy
 }
 
 // configurationLabel hashes a canonical binding; allowlist order has no meaning.
@@ -84,19 +84,7 @@ func (p *provider) configurationLabel(queue string) string {
 	network.CIDRs, network.Hosts = slices.Clone(network.CIDRs), slices.Clone(network.Hosts)
 	slices.Sort(network.CIDRs)
 	slices.Sort(network.Hosts)
-	var binding any = struct {
-		Version    int
-		Queue      string
-		Bootstrap  bootstrapMode
-		Lifecycle  compute.LifecyclePolicy
-		Branchable bool
-		Source     machineSource
-		Resources  machineResources
-		Network    networkPolicy
-	}{2, queue, p.bootstrap, p.policy.Lifecycle, p.branchable, machineSource{"image", p.image}, machineResources{p.cpus, p.memoryMB, p.diskGB}, network}
-	if p.bootstrap == bootstrapNone && p.policy.Lifecycle == compute.LifecycleFresh && !p.branchable {
-		binding = nativeBinding{1, queue, "native-process", machineSource{"image", p.image}, machineResources{p.cpus, p.memoryMB, p.diskGB}, network}
-	}
+	binding := configurationBinding{2, queue, p.bootstrap, p.policy.Lifecycle, !p.policy.NoBranching, machineSource{"image", p.image}, machineResources{p.cpus, p.memoryMB, p.diskGB}, network}
 	encoded, _ := json.Marshal(binding)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
@@ -113,28 +101,7 @@ func (p *provider) cleanup(id string) {
 	_ = p.request(ctx, http.MethodDelete, machinePath(id), nil, nil)
 }
 
-// validateOperation applies lifecycle admission before endpoint or identity validation.
-func (p *provider) validateOperation(op compute.Operation) error {
-	if err := p.policy.ValidateOperation(op); err != nil {
-		if p.preset && op == compute.OperationRestore {
-			return fmt.Errorf("smol-cloud: native-process does not support restoration: %w", err)
-		}
-		return err
-	}
-	if !p.branchable && (op == compute.OperationSnapshot || op == compute.OperationRestore) {
-		return fmt.Errorf("smol-cloud: branchable=false does not support %s: %w", op, errors.ErrUnsupported)
-	}
-	return nil
-}
-
-func (p *provider) freshDiagnostic() string {
-	if p.preset {
-		return "native-process"
-	}
-	return "fresh lifecycle"
-}
-
-// Start creates or adopts the configured workload using the stable queue name.
+// Start creates or adopts the configured machine using the stable queue name.
 // Explicit settings require unique ownership and matching configuration on adoption.
 func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.ProviderStatus, error) {
 	name, err := machineName(taskQueueName, "")
@@ -146,14 +113,14 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 		Source:     machineSource{Type: "image", Reference: p.image},
 		Resources:  machineResources{CPUs: p.cpus, MemoryMB: p.memoryMB, DiskGB: p.diskGB},
 		Network:    p.networkPolicy(),
-		Branchable: p.branchable,
+		Branchable: !p.policy.NoBranching,
 		Env:        map[string]string{"TEMPORAL_TASK_QUEUE": taskQueueName},
 		Labels:     map[string]string{"temporal-harness": "smol-cloud"},
 	}
 	if p.bootstrap == bootstrapNone {
 		request.Env = map[string]string{}
 	}
-	if p.bound {
+	if p.bindConfiguration {
 		request.Labels["temporal-harness-config"] = p.configurationLabel(taskQueueName)
 	}
 	var created createdMachine
@@ -174,7 +141,7 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) err
 }
 
 func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) error {
-	if err := p.validateOperation(compute.OperationSuspend); err != nil {
+	if err := p.policy.ValidateOperation(compute.OperationSuspend); err != nil {
 		return err
 	}
 	id, err := machineID(status)
@@ -185,7 +152,7 @@ func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) 
 }
 
 func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) error {
-	if err := p.validateOperation(compute.OperationResume); err != nil {
+	if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
 		return err
 	}
 	id, err := machineID(status)
@@ -199,7 +166,7 @@ func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) e
 }
 
 func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
-	if err := p.validateOperation(compute.OperationSnapshot); err != nil {
+	if err := p.policy.ValidateOperation(compute.OperationSnapshot); err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
 	}
 	id, err := machineID(status)
@@ -223,7 +190,7 @@ func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus)
 // does not accept label overrides on restore; explicit configurations refuse
 // conflict adoption unless the existing machine already has a matching binding.
 func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
-	if err := p.validateOperation(compute.OperationRestore); err != nil {
+	if err := p.policy.ValidateOperation(compute.OperationRestore); err != nil {
 		return nil, err
 	}
 	if snapshot == nil || snapshot.SnapshotID == "" {
@@ -239,7 +206,7 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 }
 
 func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) error {
-	if err := p.validateOperation(compute.OperationDeleteSnapshot); err != nil {
+	if err := p.policy.ValidateOperation(compute.OperationDeleteSnapshot); err != nil {
 		return err
 	}
 	if snapshot == nil || snapshot.SnapshotID == "" {
@@ -290,7 +257,7 @@ func (p *provider) adopt(ctx context.Context, name, queue, op, past string, crea
 		created.ID, created.Network, err = p.findOwned(ctx, name, queue)
 	}
 	if err != nil {
-		if p.bound && !recovered && created.ID != "" {
+		if p.bindConfiguration && !recovered && created.ID != "" {
 			p.cleanup(created.ID)
 		}
 		return nil, fmt.Errorf("smol-cloud: %s: %w", op, err)
@@ -329,20 +296,17 @@ func (p *provider) startRecovered(ctx context.Context, id string) error {
 		return p.waitReady(ctx, id)
 	}
 	if state.State == "paused" {
-		if p.policy.Lifecycle == compute.LifecycleFresh {
-			return fmt.Errorf("smol-cloud: %s cannot adopt paused machine: %w", p.freshDiagnostic(), errors.ErrUnsupported)
+		if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+			return fmt.Errorf("smol-cloud: cannot adopt paused machine: %w", err)
 		}
 		return p.Resume(ctx, &compute.ProviderStatus{InstanceID: id})
-	}
-	if p.policy.Lifecycle == compute.LifecycleFresh && state.State != "stopped" {
-		return fmt.Errorf("smol-cloud: %s cannot adopt machine in state %q", p.freshDiagnostic(), state.State)
 	}
 	return p.start(ctx, id)
 }
 
 func (p *provider) start(ctx context.Context, id string) error {
 	path := machinePath(id) + "/start"
-	if p.branchable {
+	if !p.policy.NoBranching {
 		path += "?forkable=true"
 	}
 	if err := p.request(ctx, http.MethodPost, path, nil, nil); err != nil && !isStatus(err, http.StatusConflict) {
@@ -363,7 +327,7 @@ func (p *provider) findOwned(ctx context.Context, name, queue string) (string, n
 	if err := p.request(ctx, http.MethodGet, "/v1/machines", nil, &rows); err != nil {
 		return "", networkPolicy{}, err
 	}
-	if p.bound {
+	if p.bindConfiguration {
 		matches := 0
 		for _, machine := range rows {
 			if machine.Name == name {
@@ -376,7 +340,7 @@ func (p *provider) findOwned(ctx context.Context, name, queue string) (string, n
 	}
 	for _, machine := range rows {
 		if machine.Name == name && machine.Labels["temporal-harness"] == "smol-cloud" && machine.ID != "" {
-			if p.bound && machine.Labels["temporal-harness-config"] != p.configurationLabel(queue) {
+			if p.bindConfiguration && machine.Labels["temporal-harness-config"] != p.configurationLabel(queue) {
 				return "", networkPolicy{}, fmt.Errorf("smol-cloud: existing machine configuration differs from requested configuration")
 			}
 			if !p.sameNetwork(machine.Network) {
@@ -430,8 +394,10 @@ func (p *provider) waitReady(ctx context.Context, id string) error {
 		if state.State == "failed" || state.State == "deleted" || state.State == "stopped" {
 			return fmt.Errorf("smol-cloud: machine %s entered %s", id, state.State)
 		}
-		if p.policy.Lifecycle == compute.LifecycleFresh && state.State == "paused" {
-			return fmt.Errorf("smol-cloud: %s cannot adopt paused machine: %w", p.freshDiagnostic(), errors.ErrUnsupported)
+		if state.State == "paused" {
+			if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+				return fmt.Errorf("smol-cloud: cannot adopt paused machine: %w", err)
+			}
 		}
 		if state.Ready != nil && *state.Ready {
 			return nil

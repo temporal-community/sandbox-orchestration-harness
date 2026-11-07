@@ -46,6 +46,25 @@ func TestExecutionPolicyOperations(t *testing.T) {
 	}
 }
 
+func TestExecutionPolicyNoBranching(t *testing.T) {
+	policy := compute.ExecutionPolicy{NoBranching: true}
+	for _, operation := range []compute.Operation{compute.OperationSnapshot, compute.OperationRestore} {
+		err := policy.ValidateOperation(operation)
+		if !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "branching is disabled; "+string(operation)) {
+			t.Fatalf("no-branching %s rejection = %v", operation, err)
+		}
+	}
+	for _, operation := range []compute.Operation{compute.OperationCommand, compute.OperationStop, compute.OperationSuspend, compute.OperationResume, compute.OperationDeleteSnapshot} {
+		if err := policy.ValidateOperation(operation); err != nil {
+			t.Fatalf("no-branching rejects %s: %v", operation, err)
+		}
+	}
+	err := (compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh, NoBranching: true}).ValidateOperation(compute.OperationSnapshot)
+	if !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "fresh lifecycle does not support snapshot") {
+		t.Fatalf("fresh no-branching snapshot rejection = %v", err)
+	}
+}
+
 func TestExecutionPolicyInitialOptions(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -61,10 +80,11 @@ func TestExecutionPolicyInitialOptions(t *testing.T) {
 		{name: "empty snapshot", idle: compute.NoIdleTimeout, snapshot: &compute.ProviderSnapshot{}, message: "does not support restore"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := (compute.ExecutionPolicy{}).ValidateInitial(test.idle, test.snapshot); err != nil {
+			options := compute.InitialOptions{IdleTimeout: test.idle, Snapshot: test.snapshot}
+			if err := (compute.ExecutionPolicy{}).ValidateInitial(options); err != nil {
 				t.Fatalf("zero policy changes initial options: %v", err)
 			}
-			err := (compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}).ValidateInitial(test.idle, test.snapshot)
+			err := (compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}).ValidateInitial(options)
 			if test.message == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -74,8 +94,20 @@ func TestExecutionPolicyInitialOptions(t *testing.T) {
 			}
 		})
 	}
-	if err := (compute.ExecutionPolicy{Lifecycle: "unknown"}).ValidateInitial(compute.NoIdleTimeout, nil); err == nil || !strings.Contains(err.Error(), "unknown lifecycle policy") {
+	if err := (compute.ExecutionPolicy{Lifecycle: "unknown"}).ValidateInitial(compute.InitialOptions{IdleTimeout: compute.NoIdleTimeout}); err == nil || !strings.Contains(err.Error(), "unknown lifecycle policy") {
 		t.Fatalf("unknown initial policy rejection = %v", err)
+	}
+}
+
+func TestExecutionPolicyInitialRestoreInEveryLifecycle(t *testing.T) {
+	snapshot := &compute.ProviderSnapshot{SnapshotID: "snapshot"}
+	noBranching := compute.ExecutionPolicy{NoBranching: true}
+	err := noBranching.ValidateInitial(compute.InitialOptions{Snapshot: snapshot})
+	if !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "branching is disabled; restore") {
+		t.Fatalf("standard no-branching initial restore = %v", err)
+	}
+	if err := noBranching.ValidateInitial(compute.InitialOptions{}); err != nil {
+		t.Fatalf("standard no-branching default idle without restore = %v", err)
 	}
 }
 

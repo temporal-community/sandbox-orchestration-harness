@@ -21,15 +21,15 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-type nativeWorkflowInput struct {
+type processWorkflowInput struct {
 	Provider    compute.ProviderDetails
 	DisableIdle bool
 	Fresh       bool
 }
 
-func nativeProcessWorkflow(ctx workflow.Context, input nativeWorkflowInput) error {
+func processWorkflow(ctx workflow.Context, input processWorkflowInput) error {
 	ready := false
-	if err := workflow.SetQueryHandler(ctx, "native-ready", func() (bool, error) { return ready, nil }); err != nil {
+	if err := workflow.SetQueryHandler(ctx, "process-ready", func() (bool, error) { return ready, nil }); err != nil {
 		return err
 	}
 	var options []sandbox.SandboxOption
@@ -40,12 +40,12 @@ func nativeProcessWorkflow(ctx workflow.Context, input nativeWorkflowInput) erro
 	if err != nil {
 		return err
 	}
-	result, err := s.ExecuteCommand(ctx, "read-native-output")
+	result, err := s.ExecuteCommand(ctx, "read-process-output")
 	if err != nil {
 		return err
 	}
-	if result.Stdout != "native-process" {
-		return errors.New("native process output was not retained")
+	if result.Stdout != "process-output" {
+		return errors.New("process output was not retained")
 	}
 	if input.Fresh {
 		ref, err := s.Ref()
@@ -64,7 +64,7 @@ func nativeProcessWorkflow(ctx workflow.Context, input nativeWorkflowInput) erro
 		}
 	}
 	ready = true
-	workflow.GetSignalChannel(ctx, "native-finish").Receive(ctx, nil)
+	workflow.GetSignalChannel(ctx, "process-finish").Receive(ctx, nil)
 	return s.Stop(ctx)
 }
 
@@ -78,18 +78,18 @@ func scheduledActivityNames(history *historypb.History) []string {
 	return names
 }
 
-// TestLocalNativeProcessHistory uses only the local Temporal server and a fake
+// TestLocalProcessWithoutWorkerHistory uses only the local Temporal server and a fake
 // provider. The only Temporal Worker polls the orchestration queue on the host.
-func TestLocalNativeProcessHistory(t *testing.T) {
+func TestLocalProcessWithoutWorkerHistory(t *testing.T) {
 	if os.Getenv("HARNESS_LOCAL_TEST") != "1" {
 		t.Skip("set HARNESS_LOCAL_TEST=1 for local server conformance")
 	}
 	for _, name := range []string{"default-idle", "no-idle-timeout", "fresh-policy"} {
 		disableIdle := name != "default-idle"
 		t.Run(name, func(t *testing.T) {
-			b := &nativeBoundary{LoseFirstReply: true}
-			typ := registerNativeBoundary(b)
-			provider := compute.ProviderDetails{Type: typ, Config: map[string]string{"workload": "printf native-process", "provider-owned-extra": "retained"}}
+			b := &processBoundary{LoseFirstReply: true}
+			typ := registerProcessBoundary(b)
+			provider := compute.ProviderDetails{Type: typ, Config: map[string]string{"workload": "printf process-output", "provider-owned-extra": "retained"}}
 			if name == "fresh-policy" {
 				compute.RegisterPolicy(typ, func(map[string]string) (compute.ExecutionPolicy, error) {
 					return compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}, nil
@@ -102,15 +102,15 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer c.Close()
-			queue := fmt.Sprintf("native-process-%s-%d", name, time.Now().UnixNano())
+			queue := fmt.Sprintf("process-%s-%d", name, time.Now().UnixNano())
 			w := worker.New(c, queue, worker.Options{})
 			sandbox.Register(w, c)
-			w.RegisterWorkflow(nativeProcessWorkflow)
+			w.RegisterWorkflow(processWorkflow)
 			if err := w.Start(); err != nil {
 				t.Fatal(err)
 			}
 			defer w.Stop()
-			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, nativeProcessWorkflow, nativeWorkflowInput{Provider: provider, DisableIdle: disableIdle, Fresh: name == "fresh-policy"})
+			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, processWorkflow, processWorkflowInput{Provider: provider, DisableIdle: disableIdle, Fresh: name == "fresh-policy"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -118,7 +118,7 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 			ticker := time.NewTicker(10 * time.Millisecond)
 			defer ticker.Stop()
 			for {
-				value, err := c.QueryWorkflow(ctx, run.GetID(), run.GetRunID(), "native-ready")
+				value, err := c.QueryWorkflow(ctx, run.GetID(), run.GetRunID(), "process-ready")
 				var ready bool
 				if err == nil {
 					if err := value.Get(&ready); err != nil {
@@ -130,7 +130,7 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 				}
 				select {
 				case <-ctx.Done():
-					t.Fatal("native workflow did not become ready:", ctx.Err())
+					t.Fatal("process workflow did not become ready:", ctx.Err())
 				case <-ticker.C:
 				}
 			}
@@ -160,7 +160,7 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 				t.Fatalf("controller did not retain input: %+v", state)
 			}
 			b.mu.Lock()
-			starts := append([]nativeLaunch(nil), b.Starts...)
+			starts := append([]processLaunch(nil), b.Starts...)
 			resource := b.Resources["sandbox-"+childID]
 			resourceCount := len(b.Resources)
 			b.mu.Unlock()
@@ -172,10 +172,10 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 					t.Fatalf("actual Activity retry changed identity/config: %+v", launch)
 				}
 			}
-			if state.Status == nil || state.Status.InstanceID != resource.ID || resource.Output != "native-process" {
+			if state.Status == nil || state.Status.InstanceID != resource.ID || resource.Output != "process-output" {
 				t.Fatalf("retained resource=%+v state=%+v", resource, state)
 			}
-			if err := c.SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "native-finish", nil); err != nil {
+			if err := c.SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "process-finish", nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := run.Get(ctx, nil); err != nil {
@@ -219,7 +219,7 @@ func TestLocalNativeProcessHistory(t *testing.T) {
 					}
 				}
 				replayer := worker.NewWorkflowReplayer()
-				replayer.RegisterWorkflow(nativeProcessWorkflow)
+				replayer.RegisterWorkflow(processWorkflow)
 				replayer.RegisterWorkflow(controller.SandboxWorkflow)
 				original := workflow.Execution{ID: run.GetID(), RunID: run.GetRunID()}
 				if label == "controller" {
@@ -252,8 +252,8 @@ func TestLocalPublicSandboxRejectsInvalidProviderBeforeAllocation(t *testing.T) 
 	}
 	for _, name := range []string{"unknown", "missing-workload", "invalid-workload"} {
 		t.Run(name, func(t *testing.T) {
-			b := &nativeBoundary{}
-			typ := registerNativeBoundary(b)
+			b := &processBoundary{}
+			typ := registerProcessBoundary(b)
 			config := map[string]string{}
 			if name == "unknown" {
 				typ = compute.ProviderType("unregistered-" + string(typ))
@@ -268,15 +268,15 @@ func TestLocalPublicSandboxRejectsInvalidProviderBeforeAllocation(t *testing.T) 
 				t.Fatal(err)
 			}
 			defer c.Close()
-			queue := fmt.Sprintf("native-invalid-%s-%d", name, time.Now().UnixNano())
+			queue := fmt.Sprintf("process-invalid-%s-%d", name, time.Now().UnixNano())
 			w := worker.New(c, queue, worker.Options{})
 			sandbox.Register(w, c)
-			w.RegisterWorkflow(nativeProcessWorkflow)
+			w.RegisterWorkflow(processWorkflow)
 			if err := w.Start(); err != nil {
 				t.Fatal(err)
 			}
 			defer w.Stop()
-			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, nativeProcessWorkflow, nativeWorkflowInput{Provider: compute.ProviderDetails{Type: typ, Config: config}})
+			run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: queue, TaskQueue: queue}, processWorkflow, processWorkflowInput{Provider: compute.ProviderDetails{Type: typ, Config: config}})
 			if err != nil {
 				t.Fatal(err)
 			}

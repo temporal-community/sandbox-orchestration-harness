@@ -26,7 +26,7 @@ func TestExplicitSettingsCreateRequests(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%s/%t", bootstrap, lifecycle, branchable), func(t *testing.T) {
 					var request createMachineRequest
 					starts := 0
-					nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+					fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 						switch r.Method + " " + r.URL.Path {
 						case "POST /v1/machines":
 							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -50,7 +50,7 @@ func TestExplicitSettingsCreateRequests(t *testing.T) {
 							w.WriteHeader(http.StatusBadRequest)
 						}
 					})
-					p := newNativeProvider(t, map[string]string{"image": "image", ConfigKeyBootstrap: bootstrap, ConfigKeyLifecycle: lifecycle, ConfigKeyBranchable: fmt.Sprint(branchable)})
+					p := newTestProvider(t, map[string]string{"image": "image", ConfigKeyBootstrap: bootstrap, ConfigKeyLifecycle: lifecycle, ConfigKeyBranchable: fmt.Sprint(branchable)})
 					if status, err := p.Start(context.Background(), "stable-queue"); err != nil || status.InstanceID != "machine" {
 						t.Fatalf("start: %v %v", status, err)
 					}
@@ -72,31 +72,29 @@ func TestSettingsAdmissionAndPurePolicy(t *testing.T) {
 	// Policy admission must work in a Workflow without endpoint or credential access.
 	t.Setenv("SMOL_CLOUD_TOKEN", "")
 	t.Setenv("SMOL_CLOUD_URL", "invalid endpoint")
-	for _, config := range []map[string]string{
-		{"image": "image"},
-		{"image": "image", "bootstrap": "none"},
-		{"image": "image", "lifecycle": "fresh"},
-		nativeConfig(),
+	for _, tc := range []struct {
+		config map[string]string
+		want   compute.ExecutionPolicy
+	}{
+		{map[string]string{"image": "image"}, compute.ExecutionPolicy{}},
+		{map[string]string{"image": "image", "bootstrap": "none"}, compute.ExecutionPolicy{}},
+		{map[string]string{"image": "image", "lifecycle": "standard"}, compute.ExecutionPolicy{}},
+		{map[string]string{"image": "image", "branchable": "true"}, compute.ExecutionPolicy{}},
+		{map[string]string{"image": "image", "branchable": "false"}, compute.ExecutionPolicy{NoBranching: true}},
+		{map[string]string{"image": "image", "lifecycle": "fresh"}, compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh, NoBranching: true}},
+		{map[string]string{"image": "image", "lifecycle": "fresh", "branchable": "false"}, compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh, NoBranching: true}},
+		{freshConfig(), compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh, NoBranching: true}},
 	} {
-		policy, err := compute.ResolvePolicy(compute.ProviderDetails{Type: providerType, Config: config})
-		if err != nil {
-			t.Fatal(err)
-		}
-		fresh := config["lifecycle"] == "fresh" || config["workload"] == "native-process"
-		if (policy.Lifecycle == compute.LifecycleFresh) != fresh {
-			t.Fatalf("policy %v for %v", policy, config)
+		policy, err := compute.ResolvePolicy(compute.ProviderDetails{Type: providerType, Config: tc.config})
+		if err != nil || policy != tc.want {
+			t.Fatalf("policy for %v = %+v, %v; want %+v", tc.config, policy, err, tc.want)
 		}
 	}
+	// Invalid policy settings fail identically in Workflow admission and in the constructor.
 	for _, settings := range []map[string]string{
-		{"bootstrap": ""}, {"bootstrap": "unknown"}, {"lifecycle": ""}, {"lifecycle": "unknown"},
+		{"lifecycle": ""}, {"lifecycle": "unknown"}, {"lifecycle": "FRESH"},
 		{"branchable": ""}, {"branchable": "TRUE"}, {"branchable": "1"},
 		{"lifecycle": "fresh", "branchable": "true"},
-		{"workload": "native-process", "bootstrap": "worker"},
-		{"workload": "native-process", "lifecycle": "standard"},
-		{"workload": "native-process", "branchable": "true"},
-		{"lifecycle": "fresh", "env": "secret"},
-		{"lifecycle": "fresh", "command": "ignored"},
-		{"lifecycle": "fresh", "opaque-future-key": "ignored"},
 	} {
 		config := maps.Clone(settings)
 		config["image"] = "image"
@@ -106,17 +104,30 @@ func TestSettingsAdmissionAndPurePolicy(t *testing.T) {
 			t.Fatalf("admission mismatch for %v: policy=%v constructor=%v", config, policyErr, constructorErr)
 		}
 	}
-	for _, settings := range []map[string]string{{}, {"bootstrap": "worker"}, {"bootstrap": "none", "lifecycle": "standard"}} {
+	// Other configuration is validated only by the constructor, inside Activities,
+	// so Workflow code keeps the command selection it had before these settings existed.
+	for _, config := range []map[string]string{
+		{"network": "blocked"},
+		{"image": "image", "bootstrap": ""}, {"image": "image", "bootstrap": "unknown"},
+		{"image": "image", "cpus": "2147483648"}, {"image": "image", "network": "unknown"},
+	} {
+		policy, policyErr := compute.ResolvePolicy(compute.ProviderDetails{Type: providerType, Config: config})
+		if _, constructorErr := New(config); policyErr != nil || policy != (compute.ExecutionPolicy{}) || constructorErr == nil {
+			t.Fatalf("policy must ignore constructor-only configuration %v: policy=%+v policyErr=%v constructor=%v", config, policy, policyErr, constructorErr)
+		}
+	}
+	// Keys that are not settings stay opaque in every lifecycle.
+	for _, settings := range []map[string]string{{}, {"bootstrap": "worker"}, {"bootstrap": "none", "lifecycle": "standard"}, {"lifecycle": "fresh"}, {"workload": "native-process"}} {
 		settings["image"], settings["opaque-future-key"] = "image", "accepted"
 		if _, err := compute.ResolvePolicy(compute.ProviderDetails{Type: providerType, Config: settings}); err != nil {
-			t.Fatalf("standard configuration flexibility: %v", err)
+			t.Fatalf("configuration flexibility for %v: %v", settings, err)
 		}
 	}
 }
 
 func TestAPIResourceValidationIndependentOfSettings(t *testing.T) {
 	calls := 0
-	nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) })
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) })
 	// Default configurations obey the API wire bounds too, even without settings keys.
 	for _, key := range []string{"cpus", "memory-mb"} {
 		if _, err := New(map[string]string{"image": "image", key: "2147483648"}); err == nil || !strings.Contains(err.Error(), key+" must be") {
@@ -156,13 +167,14 @@ func TestAPIResourceValidationIndependentOfSettings(t *testing.T) {
 
 func TestFreshProviderLifecycleRefusesBeforeHTTP(t *testing.T) {
 	calls := 0
-	nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) })
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) })
 	for _, config := range []map[string]string{
-		nativeConfig(),
+		freshConfig(),
+		{"image": "image", "lifecycle": "fresh"},
 		{"image": "image", "bootstrap": "worker", "lifecycle": "fresh"},
 		{"image": "image", "bootstrap": "none", "lifecycle": "fresh"},
 	} {
-		p := newNativeProvider(t, config)
+		p := newTestProvider(t, config)
 		status := &compute.ProviderStatus{InstanceID: "machine"}
 		snapshot := &compute.ProviderSnapshot{SnapshotID: "snapshot"}
 		for _, empty := range []bool{false, true} {
@@ -187,7 +199,7 @@ func TestBranchabilityIndependentOfBootstrapAndStandardLifecycle(t *testing.T) {
 	for _, bootstrap := range []string{"worker", "none"} {
 		t.Run(bootstrap, func(t *testing.T) {
 			calls := 0
-			nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+			fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				switch r.Method + " " + r.URL.Path {
 				case "POST /v1/machines/machine/pause", "POST /v1/machines/machine/resume":
@@ -199,7 +211,7 @@ func TestBranchabilityIndependentOfBootstrapAndStandardLifecycle(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 				}
 			})
-			p := newNativeProvider(t, map[string]string{"image": "image", "bootstrap": bootstrap, "branchable": "false"})
+			p := newTestProvider(t, map[string]string{"image": "image", "bootstrap": bootstrap, "branchable": "false"})
 			status := &compute.ProviderStatus{InstanceID: "machine"}
 			_, _, snapshotErr := p.Snapshot(context.Background(), status)
 			_, restoreErr := p.StartFromSnapshot(context.Background(), "queue", &compute.ProviderSnapshot{SnapshotID: "snapshot"})
@@ -219,23 +231,15 @@ func TestBranchabilityIndependentOfBootstrapAndStandardLifecycle(t *testing.T) {
 	}
 }
 
-func TestConfigurationDigestCompatibilityAndIndependence(t *testing.T) {
-	nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("unexpected HTTP") })
-	// This is the original v1 JSON encoding, independent of the current binding type.
-	old := `{"Version":1,"Queue":"queue","Workload":"native-process","Source":{"type":"image","reference":"image"},"Resources":{"cpus":1,"memoryMb":512},"Network":{"mode":"blocked"}}`
-	sum := sha256.Sum256([]byte(old))
-	want := hex.EncodeToString(sum[:])
-	for _, config := range []map[string]string{
-		{"image": "image", "workload": "native-process"},
-		{"image": "image", "bootstrap": "none", "lifecycle": "fresh"},
-		{"image": "image", "workload": "native-process", "bootstrap": "none", "lifecycle": "fresh", "branchable": "false"},
-	} {
-		p := newNativeProvider(t, config).(*provider)
-		if got := p.configurationLabel("queue"); got != want {
-			t.Fatalf("historical digest mismatch: %s != %s", got, want)
-		}
+func TestConfigurationDigestIndependence(t *testing.T) {
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Fatal("unexpected HTTP") })
+	// An implied branchable=false and an explicit one select the same configuration.
+	implied := newTestProvider(t, map[string]string{"image": "image", "bootstrap": "none", "lifecycle": "fresh"}).(*provider).configurationLabel("queue")
+	explicit := newTestProvider(t, map[string]string{"image": "image", "bootstrap": "none", "lifecycle": "fresh", "branchable": "false"}).(*provider).configurationLabel("queue")
+	if implied != explicit {
+		t.Fatalf("equivalent settings differ: %s != %s", implied, explicit)
 	}
-	seen := map[string]bool{want: true}
+	seen := map[string]bool{implied: true}
 	for _, config := range []map[string]string{
 		{"image": "image", "bootstrap": "worker", "lifecycle": "fresh"},
 		{"image": "image", "bootstrap": "none", "lifecycle": "standard", "branchable": "false"},
@@ -243,7 +247,7 @@ func TestConfigurationDigestCompatibilityAndIndependence(t *testing.T) {
 		{"image": "image", "bootstrap": "worker", "lifecycle": "standard", "branchable": "true"},
 		{"image": "image", "bootstrap": "worker", "lifecycle": "standard", "branchable": "false"},
 	} {
-		p := newNativeProvider(t, config).(*provider)
+		p := newTestProvider(t, config).(*provider)
 		digest := p.configurationLabel("queue")
 		if seen[digest] {
 			t.Fatalf("settings share a digest: %v", config)
@@ -253,8 +257,8 @@ func TestConfigurationDigestCompatibilityAndIndependence(t *testing.T) {
 }
 
 func TestV2ConfigurationDigestGolden(t *testing.T) {
-	nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected HTTP") })
-	p := newNativeProvider(t, map[string]string{
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected HTTP") })
+	p := newTestProvider(t, map[string]string{
 		"image": "example/worker@sha256:abcdef", "bootstrap": "none", "lifecycle": "standard", "branchable": "true",
 		"cpus": "3", "memory-mb": "1536", "disk-gb": "17", "network": "allowCidrs",
 		"allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "z.example,a.example",
@@ -301,7 +305,7 @@ func TestV2ConfigurationBindingSensitivityAndAdoption(t *testing.T) {
 			var requested createMachineRequest
 			var otherLabel string
 			calls, effects := 0, 0
-			nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+			fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				switch r.Method + " " + r.URL.Path {
 				case "POST /v1/machines":
@@ -321,8 +325,8 @@ func TestV2ConfigurationBindingSensitivityAndAdoption(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 				}
 			})
-			p = newNativeProvider(t, config).(*provider)
-			other := newNativeProvider(t, otherConfig).(*provider)
+			p = newTestProvider(t, config).(*provider)
+			other := newTestProvider(t, otherConfig).(*provider)
 			otherLabel = other.configurationLabel(otherQueue)
 			if p.configurationLabel(queue) == otherLabel {
 				t.Fatalf("v2 digest does not bind %s", tc.name)
@@ -334,15 +338,15 @@ func TestV2ConfigurationBindingSensitivityAndAdoption(t *testing.T) {
 		})
 	}
 	t.Run("allowlist-order", func(t *testing.T) {
-		nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected HTTP") })
+		fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) { t.Error("unexpected HTTP") })
 		config := map[string]string{
 			"image": "example/worker@sha256:abcdef", "bootstrap": "none", "lifecycle": "standard", "branchable": "true",
 			"cpus": "3", "memory-mb": "1536", "disk-gb": "17", "network": "allowCidrs",
 			"allow-cidrs": "198.51.100.0/24,192.0.2.0/24", "allow-hosts": "z.example,a.example",
 		}
-		p := newNativeProvider(t, config).(*provider)
+		p := newTestProvider(t, config).(*provider)
 		config["allow-cidrs"], config["allow-hosts"] = "192.0.2.0/24,198.51.100.0/24", "a.example,z.example"
-		other := newNativeProvider(t, config).(*provider)
+		other := newTestProvider(t, config).(*provider)
 		if p.configurationLabel("v2-queue") != other.configurationLabel("v2-queue") {
 			t.Fatal("allowlist order changed the v2 binding")
 		}
@@ -356,7 +360,7 @@ func TestExplicitSettingsAdoption(t *testing.T) {
 			reads := 0
 			config := map[string]string{"image": "image", "bootstrap": "worker", "lifecycle": "standard", "branchable": "false"}
 			var p *provider
-			nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+			fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method + " " + r.URL.Path {
 				case "POST /v1/machines":
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -370,7 +374,7 @@ func TestExplicitSettingsAdoption(t *testing.T) {
 					case "bootstrap", "lifecycle", "branchable":
 						otherConfig := maps.Clone(config)
 						otherConfig[tc] = map[string]string{"bootstrap": "none", "lifecycle": "fresh", "branchable": "true"}[tc]
-						other := newNativeProvider(t, otherConfig).(*provider)
+						other := newTestProvider(t, otherConfig).(*provider)
 						labels["temporal-harness-config"] = other.configurationLabel("queue")
 					case "missing-label":
 						delete(labels, "temporal-harness-config")
@@ -393,7 +397,7 @@ func TestExplicitSettingsAdoption(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 				}
 			})
-			p = newNativeProvider(t, config).(*provider)
+			p = newTestProvider(t, config).(*provider)
 			status, err := p.Start(context.Background(), "queue")
 			if tc == "matching" {
 				if err != nil || status.InstanceID != "owned" || reads != 2 {
@@ -411,7 +415,7 @@ func TestNoBootstrapStandardRestoreAndConflictAdmission(t *testing.T) {
 		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
 			var restored map[string]any
 			mutations := 0
-			nativeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+			fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method + " " + r.URL.Path {
 				case "POST /v1/checkpoints/checkpoint/restore":
 					_ = json.NewDecoder(r.Body).Decode(&restored)
@@ -436,7 +440,7 @@ func TestNoBootstrapStandardRestoreAndConflictAdmission(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 				}
 			})
-			p := newNativeProvider(t, map[string]string{"image": "image", "bootstrap": "none"})
+			p := newTestProvider(t, map[string]string{"image": "image", "bootstrap": "none"})
 			status, err := p.StartFromSnapshot(context.Background(), "queue", &compute.ProviderSnapshot{SnapshotID: "checkpoint"})
 			if conflict {
 				if err == nil || !strings.Contains(err.Error(), "configuration differs") || status != nil || mutations != 0 {
