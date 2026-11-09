@@ -5,6 +5,14 @@ bins: examples-auto-suspend-starter examples-auto-suspend-worker examples-detach
 # Install all tools, run all possible checks and tests (long but comprehensive).
 all: clean bins
 
+# Install nexgen 0.2.3 as described in examples/nexus-agent/README.md.
+.PHONY: generate-nexus
+generate-nexus:
+	@command -v nexgen >/dev/null 2>&1 || { echo "Install nexgen 0.2.3; see examples/nexus-agent/README.md"; exit 1; }
+	@test "$$(nexgen --version)" = "nexgen 0.2.3" || { echo "generate-nexus requires nexgen 0.2.3"; exit 1; }
+	nexgen go sdk/nexus/sandbox.nexusrpc.yaml --output sdk/generated/nexus
+	nexgen python sdk/nexus/sandbox.nexusrpc.yaml --output examples/nexus-agent/generated/sandbox_contract
+
 # Delete all build artifacts
 clean: clean-bins
 ########################################################################

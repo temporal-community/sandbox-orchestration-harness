@@ -2,6 +2,10 @@
 
 A Go example for running shell commands inside ephemeral, isolated compute environments from Temporal workflows. Workflow developers create a sandbox, run commands in it, and let the SDK handle provisioning, suspend/resume, snapshot/fork, and teardown — all driven by a long-lived child workflow that manages the sandbox lifecycle.
 
+For callers outside Temporal workflows, the [Nexus interface and minimal OpenAI Agents SDK example](examples/nexus-agent/README.md) expose the same provider lifecycle through generated Go/Python bindings and asynchronous operations.
+
+Regenerating Nexus bindings requires [nexgen 0.2.3](examples/nexus-agent/README.md#generate-and-test).
+
 ## Architecture
 
 The repository is a Go workspace with one library module and several example modules:
