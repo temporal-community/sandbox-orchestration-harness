@@ -86,7 +86,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.
 	if taskQueueName == "" {
 		return nil, fmt.Errorf("baseten: task queue is required")
 	}
-	name := sandboxName(taskQueueName)
+	name := sandboxName(ctx, taskQueueName)
 	// CreateIfNotExists returns the sandbox an earlier attempt of this
 	// activity created instead of failing with a conflict.
 	created, err := p.client.Create(ctx, sandbox.CreateOptions{
@@ -116,12 +116,17 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) (er
 	return nil
 }
 
-// Suspend is a no-op: Baseten puts a sandbox that stops receiving requests on
-// standby by itself, keeping its files and processes.
-func (p *provider) Suspend(context.Context, *compute.ProviderStatus) error { return nil }
+// Suspend is unsupported: Baseten has no API to put a sandbox on standby. It
+// does so by itself once the sandbox stops receiving requests.
+func (p *provider) Suspend(context.Context, *compute.ProviderStatus) error {
+	return fmt.Errorf("baseten: suspend: %w", errors.ErrUnsupported)
+}
 
-// Resume is a no-op: the next request to a sandbox on standby resumes it.
-func (p *provider) Resume(context.Context, *compute.ProviderStatus) error { return nil }
+// Resume is unsupported, like Suspend: the next request to a sandbox on
+// standby resumes it.
+func (p *provider) Resume(context.Context, *compute.ProviderStatus) error {
+	return fmt.Errorf("baseten: resume: %w", errors.ErrUnsupported)
+}
 
 // Snapshot is unsupported: Baseten Sandboxes have no snapshots.
 func (p *provider) Snapshot(context.Context, *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
@@ -311,7 +316,14 @@ func instanceName(status *compute.ProviderStatus) (string, error) {
 	return status.InstanceID, nil
 }
 
-func sandboxName(queue string) string {
-	sum := sha256.Sum256([]byte(queue))
+// sandboxName names a sandbox after its workflow run and task queue, so that
+// every attempt of an activity gets the same name, and a later run of a
+// workflow ID never finds the sandbox of an earlier one.
+func sandboxName(ctx context.Context, queue string) string {
+	var run string
+	if activity.IsActivity(ctx) {
+		run = activity.GetInfo(ctx).WorkflowExecution.RunID
+	}
+	sum := sha256.Sum256([]byte(queue + "\x00" + run))
 	return "temporal-" + hex.EncodeToString(sum[:8])
 }

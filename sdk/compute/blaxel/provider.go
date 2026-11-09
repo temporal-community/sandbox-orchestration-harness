@@ -81,7 +81,7 @@ func (p *provider) String() string { return "blaxel provider" }
 
 func (p *provider) Start(ctx context.Context, taskQueueName string) (_ *compute.ProviderStatus, err error) {
 	defer finalClientError(&err)
-	name, err := sandboxName(taskQueueName, "")
+	name, err := sandboxName(ctx, taskQueueName, "")
 	if err != nil {
 		return nil, err
 	}
@@ -123,11 +123,56 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) (er
 	return nil
 }
 
-// Suspend is a no-op: Blaxel puts a sandbox on standby by itself about 30
-// seconds after its last request, keeping memory and filesystem.
-func (p *provider) Suspend(context.Context, *compute.ProviderStatus) error { return nil }
+// Suspend puts the sandbox on standby, which keeps its memory and filesystem,
+// and returns once Blaxel reports it there. It asks the sandbox for standby
+// with POST /standby. A sandbox without that endpoint answers 404 and goes on
+// standby by itself about 30 seconds after its last request. Either way, a
+// running command or an open connection keeps the sandbox awake until it ends.
+func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) (err error) {
+	defer finalClientError(&err)
+	name, err := instanceName(status)
+	if err != nil {
+		return err
+	}
+	// Give up a little before the activity's deadline, so that a sandbox that
+	// stays awake fails the suspend rather than having it retried forever.
+	wait := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		wait, cancel = context.WithDeadline(ctx, deadline.Add(-5*time.Second))
+		defer cancel()
+	}
+	asked := false
+	for {
+		sandbox, err := p.client.Sandboxes.Get(ctx, name, blaxelsdk.SandboxGetParams{})
+		if err != nil {
+			return fmt.Errorf("blaxel: get sandbox: %w", err)
+		}
+		if sandbox.State == blaxelsdk.SandboxStateStandby {
+			return nil
+		}
+		if !asked && sandbox.Metadata.URL != "" {
+			asked = true
+			// Waiting for the standby is the check, so the answer does not matter.
+			_ = p.client.Post(wait, "standby", nil, nil, option.WithBaseURL(sandbox.Metadata.URL), noRetry)
+		}
+		select {
+		case <-wait.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			message := fmt.Sprintf("blaxel: sandbox %s is still running at the activity's timeout: a running process or an open connection keeps it awake", name)
+			return temporal.NewNonRetryableApplicationError(message, "SandboxHeldAwake", nil)
+		case <-time.After(standbyPoll):
+		}
+	}
+}
 
-// Resume is a no-op: the next request to a sandbox on standby resumes it.
+// standbyPoll is how often Suspend checks whether the sandbox is on standby.
+var standbyPoll = 2 * time.Second
+
+// Resume is a no-op: any request to a sandbox on standby resumes it, in about
+// 25 ms, so the next command does.
 func (p *provider) Resume(context.Context, *compute.ProviderStatus) error { return nil }
 
 func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (_ compute.SandboxPostSnapshotState, _ *compute.ProviderSnapshot, err error) {
@@ -158,14 +203,17 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 	if snapshot == nil || snapshot.SnapshotID == "" {
 		return nil, fmt.Errorf("blaxel: snapshot id is required")
 	}
-	name, err := sandboxName(taskQueueName, snapshot.SnapshotID)
+	name, err := sandboxName(ctx, taskQueueName, snapshot.SnapshotID)
 	if err != nil {
 		return nil, err
 	}
 	_, err = p.client.Snapshots.Fork(ctx, snapshot.SnapshotID, blaxelsdk.SnapshotForkParams{
 		SandboxForkRequest: blaxelsdk.SandboxForkRequestParam{TargetName: name, TargetType: "sandbox", Envs: sandboxEnv(taskQueueName)},
 	}, noRetry)
-	// A conflict means an earlier attempt of this activity already forked it.
+	// A conflict means a sandbox with this name exists. The name is unique to
+	// this workflow run, task queue and snapshot, so it is the fork an earlier
+	// attempt of this activity made before its response was lost: wait for it
+	// below, as Start does for the sandbox createIfNotExist returns.
 	if err != nil && !isStatus(err, http.StatusConflict) {
 		return nil, snapshotError("fork snapshot", err)
 	}
@@ -197,8 +245,9 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	if err != nil {
 		return nil, err
 	}
-	// keepAlive holds off standby while the command runs and kills it when the
-	// activity's deadline passes.
+	// keepAlive holds off standby while the command runs. The timeout makes the
+	// sandbox kill the command when this attempt's deadline passes, so that a
+	// command never outlives the attempt that waits for it.
 	request := blaxelsdk.ProcessRequestParam{Command: cmd, KeepAlive: blaxelsdk.Bool(true)}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := int64(time.Until(deadline).Seconds())
@@ -224,7 +273,8 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 		return nil, fmt.Errorf("blaxel: wait for command: %w", err)
 	}
 	if process.Status == blaxelsdk.ProcessResponseStatusKilled || process.Status == blaxelsdk.ProcessResponseStatusStopped {
-		// Usually the activity's timeout. Retrying would find the same process.
+		// Usually the timeout above. The retry would only re-attach to this
+		// killed process: report it once instead of retrying forever.
 		message := fmt.Sprintf("blaxel: command was %s before it finished, at the activity's timeout or by request", process.Status)
 		return nil, temporal.NewNonRetryableApplicationError(message, "CommandKilled", nil)
 	}
@@ -232,9 +282,10 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	if err != nil {
 		return nil, fmt.Errorf("blaxel: read command output: %w", err)
 	}
-	// The logs return a bounded tail of each stream: up to 4 MB, less once a
-	// sandbox has run many commands. Partial output is not the command's output,
-	// and a retry would only find the same output again.
+	// The logs return the last 4 MB of each stream, less only when large
+	// outputs of earlier commands fill the sandbox's log budget (10% of its
+	// memory). Partial output is not the command's output, and a retry would
+	// only find the same output again.
 	if strings.HasPrefix(logs.Stdout, truncated) || strings.HasPrefix(logs.Stderr, truncated) {
 		return nil, temporal.NewNonRetryableApplicationError("blaxel: command output truncated; refusing to report incomplete output", "OutputTooLarge", nil)
 	}
@@ -381,10 +432,18 @@ func instanceName(status *compute.ProviderStatus) (string, error) {
 	}
 	return status.InstanceID, nil
 }
-func sandboxName(queue, snapshot string) (string, error) {
+
+// sandboxName names a sandbox after its workflow run, task queue and snapshot,
+// so that every attempt of an activity gets the same name, and a later run of a
+// workflow ID never finds the sandbox of an earlier one.
+func sandboxName(ctx context.Context, queue, snapshot string) (string, error) {
 	if queue == "" {
 		return "", fmt.Errorf("blaxel: task queue is required")
 	}
-	sum := sha256.Sum256([]byte(queue + "\x00" + snapshot))
+	var run string
+	if activity.IsActivity(ctx) {
+		run = activity.GetInfo(ctx).WorkflowExecution.RunID
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{queue, snapshot, run}, "\x00")))
 	return "temporal-" + hex.EncodeToString(sum[:8]), nil
 }

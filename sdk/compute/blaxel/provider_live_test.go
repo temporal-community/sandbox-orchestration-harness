@@ -52,22 +52,14 @@ func TestBlaxelLiveStandbyAndSnapshot(t *testing.T) {
 	if err != nil || recovered.InstanceID != original.InstanceID {
 		t.Fatalf("live retry of start: recovered=%v err=%v", recovered, err)
 	}
+	// Suspend returns once the sandbox is on standby.
+	start := time.Now()
 	if err := p.Suspend(ctx, original); err != nil {
 		t.Fatalf("live suspend: %v", err)
 	}
-	for {
-		sandbox, err := p.client.Sandboxes.Get(ctx, original.InstanceID, blaxelsdk.SandboxGetParams{})
-		if err != nil {
-			t.Fatalf("live get: %v", err)
-		}
-		if sandbox.State == blaxelsdk.SandboxStateStandby {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("sandbox did not go on standby")
-		case <-time.After(5 * time.Second):
-		}
+	t.Logf("suspend took %s", time.Since(start))
+	if sandbox, err := p.client.Sandboxes.Get(ctx, original.InstanceID, blaxelsdk.SandboxGetParams{}); err != nil || sandbox.State != blaxelsdk.SandboxStateStandby {
+		t.Fatalf("live suspend returned before standby: %v", err)
 	}
 	if err := p.Resume(ctx, original); err != nil {
 		t.Fatalf("live resume: %v", err)

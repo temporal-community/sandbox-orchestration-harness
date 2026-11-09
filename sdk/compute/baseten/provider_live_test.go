@@ -51,18 +51,12 @@ func TestBasetenLive(t *testing.T) {
 	if err != nil || recovered.InstanceID != status.InstanceID {
 		t.Fatalf("live retry of start: recovered=%v err=%v", recovered, err)
 	}
-	if err := p.Suspend(ctx, status); err != nil {
-		t.Fatalf("live suspend: %v", err)
-	}
 	// Left idle, the sandbox goes on standby; the next command resumes it
 	// with its files.
 	select {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	case <-time.After(45 * time.Second):
-	}
-	if err := p.Resume(ctx, status); err != nil {
-		t.Fatalf("live resume: %v", err)
 	}
 	start = time.Now()
 	result, err = p.ExecuteCommand(ctx, status, "cat /tmp/proof; echo out-of-band >&2; exit 3")

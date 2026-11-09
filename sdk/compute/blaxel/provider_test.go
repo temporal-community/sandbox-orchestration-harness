@@ -41,6 +41,11 @@ func sandboxJSON(server *httptest.Server, name, status string) string {
 	return fmt.Sprintf(`{"metadata":{"name":%q,"url":%q},"status":%q}`, name, server.URL+"/sbx", status)
 }
 
+// withState adds a standby state, RUNNING or STANDBY, to a sandbox's JSON.
+func withState(sandbox, state string) string {
+	return strings.TrimSuffix(sandbox, "}") + `,"state":` + strconv.Quote(state) + "}"
+}
+
 // runActivity runs exec as the activity of a workflow, retried by Temporal.
 func runActivity(t *testing.T, exec func(context.Context) (*compute.CommandResult, error)) (*compute.CommandResult, error) {
 	t.Helper()
@@ -87,6 +92,7 @@ func envs(request map[string]any) string {
 func TestLifecycleAndSnapshot(t *testing.T) {
 	calls := []string{}
 	var created, forked, execed map[string]any
+	standby := "RUNNING"
 	var server *httptest.Server
 	server = fakeBlaxel(t, func(w http.ResponseWriter, r *http.Request, route string) {
 		calls = append(calls, route)
@@ -99,7 +105,11 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&created)
 			fmt.Fprint(w, sandboxJSON(server, created["metadata"].(map[string]any)["name"].(string), "DEPLOYING"))
 		case route == "GET /v0/sandboxes/"+name:
-			fmt.Fprint(w, sandboxJSON(server, name, "DEPLOYED"))
+			fmt.Fprint(w, withState(sandboxJSON(server, name, "DEPLOYED"), standby))
+		case route == "POST /sbx/standby":
+			standby = "STANDBY"
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, `{"message":"Standby requested"}`)
 		case route == "POST /sbx/process":
 			_ = json.NewDecoder(r.Body).Decode(&execed)
 			fmt.Fprint(w, `{"name":"proc-1","status":"running"}`)
@@ -152,8 +162,9 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 {
 		t.Fatalf("exec request: %v", execed)
 	}
-	if err := instance.Suspend(ctx, status); err != nil {
-		t.Fatal(err)
+	// Suspend asks for standby and returns once the sandbox is there.
+	if err := instance.Suspend(ctx, status); err != nil || standby != "STANDBY" {
+		t.Fatal(standby, err)
 	}
 	if err := instance.Resume(ctx, status); err != nil {
 		t.Fatal(err)
@@ -176,8 +187,66 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	if err := instance.DeleteSnapshot(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 11 {
+	if len(calls) != 14 {
 		t.Fatalf("unexpected calls: %v", calls)
+	}
+}
+
+func TestSuspendWaitsForStandby(t *testing.T) {
+	standbyPoll = time.Millisecond
+	t.Cleanup(func() { standbyPoll = 2 * time.Second })
+	asked, gets := 0, 0
+	held := false
+	var server *httptest.Server
+	server = fakeBlaxel(t, func(w http.ResponseWriter, r *http.Request, route string) {
+		switch route {
+		case "GET /v0/sandboxes/temporal-1":
+			gets++
+			state := "RUNNING"
+			if gets == 3 && !held {
+				state = "STANDBY"
+			}
+			fmt.Fprint(w, withState(sandboxJSON(server, "temporal-1", "DEPLOYED"), state))
+		case "POST /sbx/standby":
+			// A sandbox API from before POST /standby.
+			asked++
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"not found"}`)
+		default:
+			t.Errorf("unexpected request %s", route)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	p, err := New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := &compute.ProviderStatus{InstanceID: "temporal-1"}
+	if err := p.Suspend(context.Background(), status); err != nil || asked != 1 || gets != 3 {
+		t.Fatalf("suspend: asked=%d gets=%d err=%v", asked, gets, err)
+	}
+	// A sandbox kept awake fails the suspend before the activity times out.
+	held = true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second+100*time.Millisecond)
+	defer cancel()
+	if err := p.Suspend(ctx, status); !isFinal(err, "SandboxHeldAwake") || ctx.Err() != nil {
+		t.Fatalf("suspend of a sandbox held awake: %v", err)
+	}
+}
+
+// A retried activity names its sandbox alike; another workflow run does not.
+func TestSandboxNamePerRun(t *testing.T) {
+	outside, _ := sandboxName(context.Background(), "queue-1", "snap-1")
+	var names []string
+	result, err := runActivity(t, func(ctx context.Context) (*compute.CommandResult, error) {
+		name, _ := sandboxName(ctx, "queue-1", "snap-1")
+		if names = append(names, name); len(names) == 1 {
+			return nil, errors.New("retry")
+		}
+		return &compute.CommandResult{}, nil
+	})
+	if err != nil || result == nil || names[0] != names[1] || names[0] == outside {
+		t.Fatalf("names %v, outside an activity %s: %v", names, outside, err)
 	}
 }
 

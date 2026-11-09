@@ -139,10 +139,11 @@ func TestLifecycle(t *testing.T) {
 	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 {
 		t.Fatalf("exec request: %v", execed)
 	}
-	if err := p.Suspend(ctx, status); err != nil {
+	// No standby API: the workflow must not count the sandbox as suspended.
+	if err := p.Suspend(ctx, status); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatal(err)
 	}
-	if err := p.Resume(ctx, status); err != nil {
+	if err := p.Resume(ctx, status); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatal(err)
 	}
 	// Deleting what is already gone succeeds, so retried cleanup is safe.
