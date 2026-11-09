@@ -8,7 +8,6 @@ from .models import (
     CreateInput,
     DeleteSnapshotInput,
     ExecuteInput,
-    ForkInput,
     SandboxDescription,
     SandboxHandle,
     SnapshotHandle,
@@ -41,11 +40,6 @@ class SandboxControl:
         SandboxHandle,
         SnapshotHandle,
     ] = Operation(name="Snapshot")
-
-    fork: Operation[
-        ForkInput,
-        None,
-    ] = Operation(name="Fork")
 
     delete: Operation[
         SandboxHandle,

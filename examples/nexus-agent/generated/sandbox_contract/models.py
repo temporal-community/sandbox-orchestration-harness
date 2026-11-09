@@ -6,13 +6,39 @@ import dataclasses
 import typing
 import typing_extensions
 import temporalio.converter
+import temporalio.exceptions
 
 from ._definitions import (
     Violation,
+    _collect,
     _parse_spec_integer,
     _quote,
     _transfer_type_convertible,
 )
+
+
+_COMMAND_RESULT_DECLARED: frozenset[str] = frozenset({"stdout", "stderr", "exit_code"})
+
+
+_CREATE_INPUT_DECLARED: frozenset[str] = frozenset({"sandbox_id", "compute_provider", "idle_timeout_seconds", "snapshot"})
+
+
+_DELETE_SNAPSHOT_INPUT_DECLARED: frozenset[str] = frozenset({"sandbox_id", "snapshot_id"})
+
+
+_EXECUTE_INPUT_DECLARED: frozenset[str] = frozenset({"sandbox_id", "command", "disable_auto_resume"})
+
+
+_PROVIDER_DETAILS_DECLARED: frozenset[str] = frozenset({"type", "config"})
+
+
+_SANDBOX_DESCRIPTION_DECLARED: frozenset[str] = frozenset({"sandbox_id", "lifecycle", "instance_id"})
+
+
+_SANDBOX_HANDLE_DECLARED: frozenset[str] = frozenset({"sandbox_id"})
+
+
+_SNAPSHOT_HANDLE_DECLARED: frozenset[str] = frozenset({"snapshot_id"})
 
 
 class _CommandResultTransferTypeConverter(
@@ -56,15 +82,17 @@ class _CommandResultTransferTypeConverter(
             if exit_code_value_parsed is not None:
                 exit_code_value = exit_code_value_parsed
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "stdout" and key != "stderr" and key != "exit_code":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _COMMAND_RESULT_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return CommandResult(
             stdout=stdout_value,
             stderr=stderr_value,
             exit_code=exit_code_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -76,6 +104,11 @@ class _CommandResultTransferTypeConverter(
         if abs(value.exit_code) > 9007199254740991:
             violations.append(Violation(path="exit_code", reason="exceeds ±(2^53-1) integer cap"))
         out["exit_code"] = value.exit_code
+        for key, entry in value.additional_properties.items():
+            if key in _COMMAND_RESULT_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -90,6 +123,8 @@ class CommandResult:
     stderr: str
 
     exit_code: int
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
 
 class _CreateInputTransferTypeConverter(
@@ -116,17 +151,15 @@ class _CreateInputTransferTypeConverter(
                 if len(sandbox_id_value_raw) < 1:
                     violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(sandbox_id_value_raw)}"))
 
-        profile_value: str = typing.cast("typing.Any", None)
-        if "profile" not in raw or raw["profile"] is None:
-            violations.append(Violation(path="profile", reason="required"))
+        compute_provider_value: ProviderDetails = typing.cast("typing.Any", None)
+        if "compute_provider" not in raw or raw["compute_provider"] is None:
+            violations.append(Violation(path="compute_provider", reason="required"))
         else:
-            profile_value_raw = raw["profile"]
-            if not isinstance(profile_value_raw, str):
-                violations.append(Violation(path="profile", reason="expected string"))
-            else:
-                profile_value = profile_value_raw
-                if len(profile_value_raw) < 1:
-                    violations.append(Violation(path="profile", reason=f"must have length >= 1, got {len(profile_value_raw)}"))
+            compute_provider_value_raw = raw["compute_provider"]
+            try:
+                compute_provider_value = _ProviderDetailsTransferTypeConverter().from_transfer_type(compute_provider_value_raw, ProviderDetails)
+            except temporalio.exceptions.ApplicationError as error:
+                _collect(violations, "compute_provider", error)
 
         idle_timeout_seconds_value: int | None = None
         if "idle_timeout_seconds" in raw:
@@ -139,18 +172,32 @@ class _CreateInputTransferTypeConverter(
                     idle_timeout_seconds_value = idle_timeout_seconds_value_parsed
                     if idle_timeout_seconds_value < -1:
                         violations.append(Violation(path="idle_timeout_seconds", reason=f"must be >= -1, got {idle_timeout_seconds_value}"))
-                    if idle_timeout_seconds_value > 86400:
-                        violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 86400, got {idle_timeout_seconds_value}"))
+                    if idle_timeout_seconds_value > 9223372036:
+                        violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 9223372036, got {idle_timeout_seconds_value}"))
 
+        snapshot_value: SnapshotHandle | None = None
+        if "snapshot" in raw:
+            snapshot_value_raw = raw["snapshot"]
+            if snapshot_value_raw is None:
+                violations.append(Violation(path="snapshot", reason="explicit null not allowed"))
+            else:
+                try:
+                    snapshot_value = _SnapshotHandleTransferTypeConverter().from_transfer_type(snapshot_value_raw, SnapshotHandle)
+                except temporalio.exceptions.ApplicationError as error:
+                    _collect(violations, "snapshot", error)
+
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id" and key != "profile" and key != "idle_timeout_seconds":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _CREATE_INPUT_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return CreateInput(
             sandbox_id=sandbox_id_value,
-            profile=profile_value,
+            compute_provider=compute_provider_value,
             idle_timeout_seconds=idle_timeout_seconds_value,
+            snapshot=snapshot_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -160,17 +207,28 @@ class _CreateInputTransferTypeConverter(
         if len(value.sandbox_id) < 1:
             violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(value.sandbox_id)}"))
         out["sandbox_id"] = value.sandbox_id
-        if len(value.profile) < 1:
-            violations.append(Violation(path="profile", reason=f"must have length >= 1, got {len(value.profile)}"))
-        out["profile"] = value.profile
+        try:
+            out["compute_provider"] = _ProviderDetailsTransferTypeConverter().to_transfer_type(value.compute_provider)
+        except temporalio.exceptions.ApplicationError as error:
+            _collect(violations, "compute_provider", error)
         if value._idle_timeout_seconds is not None:
             if abs(value.idle_timeout_seconds) > 9007199254740991:
                 violations.append(Violation(path="idle_timeout_seconds", reason="exceeds ±(2^53-1) integer cap"))
             if value.idle_timeout_seconds < -1:
                 violations.append(Violation(path="idle_timeout_seconds", reason=f"must be >= -1, got {value.idle_timeout_seconds}"))
-            if value.idle_timeout_seconds > 86400:
-                violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 86400, got {value.idle_timeout_seconds}"))
+            if value.idle_timeout_seconds > 9223372036:
+                violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 9223372036, got {value.idle_timeout_seconds}"))
             out["idle_timeout_seconds"] = value._idle_timeout_seconds
+        if value.snapshot is not None:
+            try:
+                out["snapshot"] = _SnapshotHandleTransferTypeConverter().to_transfer_type(value.snapshot)
+            except temporalio.exceptions.ApplicationError as error:
+                _collect(violations, "snapshot", error)
+        for key, entry in value.additional_properties.items():
+            if key in _CREATE_INPUT_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -182,21 +240,31 @@ class CreateInput:
 
     sandbox_id: str
 
-    profile: str
+    compute_provider: ProviderDetails
 
     _idle_timeout_seconds: int | None = dataclasses.field(default=None, repr=False)
+
+    snapshot: SnapshotHandle | None = None
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
     def __init__(
         self,
         *,
         sandbox_id: str,
-        profile: str,
+        compute_provider: ProviderDetails,
         idle_timeout_seconds: int | None = None,
+        snapshot: SnapshotHandle | None = None,
+        additional_properties: dict[str, typing.Any] | None = None,
         _idle_timeout_seconds: int | None = None,
     ) -> None:
         self.sandbox_id = sandbox_id
-        self.profile = profile
+        self.compute_provider = compute_provider
         self._idle_timeout_seconds = _idle_timeout_seconds if _idle_timeout_seconds is not None else idle_timeout_seconds
+        self.snapshot = snapshot
+        self.additional_properties = (
+            {} if additional_properties is None else additional_properties
+        )
 
     @property
     def idle_timeout_seconds(self) -> int:
@@ -247,14 +315,16 @@ class _DeleteSnapshotInputTransferTypeConverter(
                 if len(snapshot_id_value_raw) < 1:
                     violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(snapshot_id_value_raw)}"))
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id" and key != "snapshot_id":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _DELETE_SNAPSHOT_INPUT_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return DeleteSnapshotInput(
             sandbox_id=sandbox_id_value,
             snapshot_id=snapshot_id_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -267,6 +337,11 @@ class _DeleteSnapshotInputTransferTypeConverter(
         if len(value.snapshot_id) < 1:
             violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(value.snapshot_id)}"))
         out["snapshot_id"] = value.snapshot_id
+        for key, entry in value.additional_properties.items():
+            if key in _DELETE_SNAPSHOT_INPUT_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -279,6 +354,8 @@ class DeleteSnapshotInput:
     sandbox_id: str
 
     snapshot_id: str
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
 
 class _ExecuteInputTransferTypeConverter(
@@ -328,15 +405,17 @@ class _ExecuteInputTransferTypeConverter(
                 else:
                     disable_auto_resume_value = disable_auto_resume_value_raw
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id" and key != "command" and key != "disable_auto_resume":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _EXECUTE_INPUT_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return ExecuteInput(
             sandbox_id=sandbox_id_value,
             command=command_value,
             disable_auto_resume=disable_auto_resume_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -351,6 +430,11 @@ class _ExecuteInputTransferTypeConverter(
         out["command"] = value.command
         if value._disable_auto_resume is not None:
             out["disable_auto_resume"] = value._disable_auto_resume
+        for key, entry in value.additional_properties.items():
+            if key in _EXECUTE_INPUT_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -366,17 +450,23 @@ class ExecuteInput:
 
     _disable_auto_resume: bool | None = dataclasses.field(default=None, repr=False)
 
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
+
     def __init__(
         self,
         *,
         sandbox_id: str,
         command: str,
         disable_auto_resume: bool | None = None,
+        additional_properties: dict[str, typing.Any] | None = None,
         _disable_auto_resume: bool | None = None,
     ) -> None:
         self.sandbox_id = sandbox_id
         self.command = command
         self._disable_auto_resume = _disable_auto_resume if _disable_auto_resume is not None else disable_auto_resume
+        self.additional_properties = (
+            {} if additional_properties is None else additional_properties
+        )
 
     @property
     def disable_auto_resume(self) -> bool:
@@ -391,143 +481,121 @@ class ExecuteInput:
         self._disable_auto_resume = None
 
 
-class _ForkInputTransferTypeConverter(
-    temporalio.converter.TransferTypeConverter["ForkInput", typing.Any]
+class _ProviderDetailsTransferTypeConverter(
+    temporalio.converter.TransferTypeConverter["ProviderDetails", typing.Any]
 ):
     @typing_extensions.override
     def from_transfer_type(
-        self, value: typing.Any, type_hint: type["ForkInput"]
-    ) -> "ForkInput":
+        self, value: typing.Any, type_hint: type["ProviderDetails"]
+    ) -> "ProviderDetails":
         violations: list[Violation] = []
         if not isinstance(value, dict):
             raise temporalio.converter.create_payload_validation_error([Violation(path="", reason="expected object")])
         raw = typing.cast("dict[str, typing.Any]", value)
 
-        sandbox_id_value: str = typing.cast("typing.Any", None)
-        if "sandbox_id" not in raw or raw["sandbox_id"] is None:
-            violations.append(Violation(path="sandbox_id", reason="required"))
+        type_value: str = typing.cast("typing.Any", None)
+        if "type" not in raw or raw["type"] is None:
+            violations.append(Violation(path="type", reason="required"))
         else:
-            sandbox_id_value_raw = raw["sandbox_id"]
-            if not isinstance(sandbox_id_value_raw, str):
-                violations.append(Violation(path="sandbox_id", reason="expected string"))
+            type_value_raw = raw["type"]
+            if not isinstance(type_value_raw, str):
+                violations.append(Violation(path="type", reason="expected string"))
             else:
-                sandbox_id_value = sandbox_id_value_raw
-                if len(sandbox_id_value_raw) < 1:
-                    violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(sandbox_id_value_raw)}"))
+                type_value = type_value_raw
+                if len(type_value_raw) < 1:
+                    violations.append(Violation(path="type", reason=f"must have length >= 1, got {len(type_value_raw)}"))
 
-        profile_value: str = typing.cast("typing.Any", None)
-        if "profile" not in raw or raw["profile"] is None:
-            violations.append(Violation(path="profile", reason="required"))
+        config_value: ProviderDetailsConfig = typing.cast("typing.Any", None)
+        if "config" not in raw or raw["config"] is None:
+            violations.append(Violation(path="config", reason="required"))
         else:
-            profile_value_raw = raw["profile"]
-            if not isinstance(profile_value_raw, str):
-                violations.append(Violation(path="profile", reason="expected string"))
-            else:
-                profile_value = profile_value_raw
-                if len(profile_value_raw) < 1:
-                    violations.append(Violation(path="profile", reason=f"must have length >= 1, got {len(profile_value_raw)}"))
+            config_value_raw = raw["config"]
+            try:
+                config_value = _ProviderDetailsConfigTransferTypeConverter().from_transfer_type(config_value_raw, ProviderDetailsConfig)
+            except temporalio.exceptions.ApplicationError as error:
+                _collect(violations, "config", error)
 
-        snapshot_id_value: str = typing.cast("typing.Any", None)
-        if "snapshot_id" not in raw or raw["snapshot_id"] is None:
-            violations.append(Violation(path="snapshot_id", reason="required"))
-        else:
-            snapshot_id_value_raw = raw["snapshot_id"]
-            if not isinstance(snapshot_id_value_raw, str):
-                violations.append(Violation(path="snapshot_id", reason="expected string"))
-            else:
-                snapshot_id_value = snapshot_id_value_raw
-                if len(snapshot_id_value_raw) < 1:
-                    violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(snapshot_id_value_raw)}"))
-
-        idle_timeout_seconds_value: int | None = None
-        if "idle_timeout_seconds" in raw:
-            idle_timeout_seconds_value_raw = raw["idle_timeout_seconds"]
-            if idle_timeout_seconds_value_raw is None:
-                violations.append(Violation(path="idle_timeout_seconds", reason="explicit null not allowed"))
-            else:
-                idle_timeout_seconds_value_parsed = _parse_spec_integer(idle_timeout_seconds_value_raw, "idle_timeout_seconds", violations)
-                if idle_timeout_seconds_value_parsed is not None:
-                    idle_timeout_seconds_value = idle_timeout_seconds_value_parsed
-                    if idle_timeout_seconds_value < -1:
-                        violations.append(Violation(path="idle_timeout_seconds", reason=f"must be >= -1, got {idle_timeout_seconds_value}"))
-                    if idle_timeout_seconds_value > 86400:
-                        violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 86400, got {idle_timeout_seconds_value}"))
-
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id" and key != "profile" and key != "snapshot_id" and key != "idle_timeout_seconds":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _PROVIDER_DETAILS_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
-        return ForkInput(
-            sandbox_id=sandbox_id_value,
-            profile=profile_value,
-            snapshot_id=snapshot_id_value,
-            idle_timeout_seconds=idle_timeout_seconds_value,
+        return ProviderDetails(
+            type=type_value,
+            config=config_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
-    def to_transfer_type(self, value: "ForkInput") -> typing.Any:
+    def to_transfer_type(self, value: "ProviderDetails") -> typing.Any:
         violations: list[Violation] = []
         out: dict[str, typing.Any] = {}
-        if len(value.sandbox_id) < 1:
-            violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(value.sandbox_id)}"))
-        out["sandbox_id"] = value.sandbox_id
-        if len(value.profile) < 1:
-            violations.append(Violation(path="profile", reason=f"must have length >= 1, got {len(value.profile)}"))
-        out["profile"] = value.profile
-        if len(value.snapshot_id) < 1:
-            violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(value.snapshot_id)}"))
-        out["snapshot_id"] = value.snapshot_id
-        if value._idle_timeout_seconds is not None:
-            if abs(value.idle_timeout_seconds) > 9007199254740991:
-                violations.append(Violation(path="idle_timeout_seconds", reason="exceeds ±(2^53-1) integer cap"))
-            if value.idle_timeout_seconds < -1:
-                violations.append(Violation(path="idle_timeout_seconds", reason=f"must be >= -1, got {value.idle_timeout_seconds}"))
-            if value.idle_timeout_seconds > 86400:
-                violations.append(Violation(path="idle_timeout_seconds", reason=f"must be <= 86400, got {value.idle_timeout_seconds}"))
-            out["idle_timeout_seconds"] = value._idle_timeout_seconds
+        if len(value.type) < 1:
+            violations.append(Violation(path="type", reason=f"must have length >= 1, got {len(value.type)}"))
+        out["type"] = value.type
+        try:
+            out["config"] = _ProviderDetailsConfigTransferTypeConverter().to_transfer_type(value.config)
+        except temporalio.exceptions.ApplicationError as error:
+            _collect(violations, "config", error)
+        for key, entry in value.additional_properties.items():
+            if key in _PROVIDER_DETAILS_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
 
 
-@_transfer_type_convertible(_ForkInputTransferTypeConverter)
-@dataclasses.dataclass(slots=True, kw_only=True, init=False)
-class ForkInput:
+@_transfer_type_convertible(_ProviderDetailsTransferTypeConverter)
+@dataclasses.dataclass(slots=True, kw_only=True)
+class ProviderDetails:
 
-    sandbox_id: str
+    type: str
 
-    profile: str
+    config: ProviderDetailsConfig
 
-    snapshot_id: str
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
-    _idle_timeout_seconds: int | None = dataclasses.field(default=None, repr=False)
 
-    def __init__(
-        self,
-        *,
-        sandbox_id: str,
-        profile: str,
-        snapshot_id: str,
-        idle_timeout_seconds: int | None = None,
-        _idle_timeout_seconds: int | None = None,
-    ) -> None:
-        self.sandbox_id = sandbox_id
-        self.profile = profile
-        self.snapshot_id = snapshot_id
-        self._idle_timeout_seconds = _idle_timeout_seconds if _idle_timeout_seconds is not None else idle_timeout_seconds
+class _ProviderDetailsConfigTransferTypeConverter(
+    temporalio.converter.TransferTypeConverter["ProviderDetailsConfig", typing.Any]
+):
+    @typing_extensions.override
+    def from_transfer_type(
+        self, value: typing.Any, type_hint: type["ProviderDetailsConfig"]
+    ) -> "ProviderDetailsConfig":
+        violations: list[Violation] = []
+        if not isinstance(value, dict):
+            raise temporalio.converter.create_payload_validation_error([Violation(path="", reason="expected object")])
+        raw = typing.cast("dict[str, typing.Any]", value)
+        additional_properties: dict[str, str] = {}
+        for key in raw:
+            member: str = typing.cast("typing.Any", None)
+            member_raw = raw[key]
+            if not isinstance(member_raw, str):
+                violations.append(Violation(path=key, reason="expected string"))
+            else:
+                member = member_raw
+            additional_properties[key] = member
+        if violations:
+            raise temporalio.converter.create_payload_validation_error(violations)
+        return ProviderDetailsConfig(additional_properties=additional_properties)
 
-    @property
-    def idle_timeout_seconds(self) -> int:
-        return self._idle_timeout_seconds if self._idle_timeout_seconds is not None else 0
+    @typing_extensions.override
+    def to_transfer_type(self, value: "ProviderDetailsConfig") -> typing.Any:
+        out: dict[str, typing.Any] = {}
+        for key, entry in value.additional_properties.items():
+            out[key] = entry
+        return out
 
-    @idle_timeout_seconds.setter
-    def idle_timeout_seconds(self, value: int) -> None:
-        self._idle_timeout_seconds = value
 
-    @idle_timeout_seconds.deleter
-    def idle_timeout_seconds(self) -> None:
-        self._idle_timeout_seconds = None
+@_transfer_type_convertible(_ProviderDetailsConfigTransferTypeConverter)
+@dataclasses.dataclass(slots=True, kw_only=True)
+class ProviderDetailsConfig:
+
+    additional_properties: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 class _SandboxDescriptionTransferTypeConverter(
@@ -576,15 +644,17 @@ class _SandboxDescriptionTransferTypeConverter(
             else:
                 instance_id_value = instance_id_value_raw
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id" and key != "lifecycle" and key != "instance_id":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _SANDBOX_DESCRIPTION_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return SandboxDescription(
             sandbox_id=sandbox_id_value,
             lifecycle=lifecycle_value,
             instance_id=instance_id_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -598,6 +668,11 @@ class _SandboxDescriptionTransferTypeConverter(
             violations.append(Violation(path="lifecycle", reason=f'must be one of ["pending", "running", "suspended", "suspended_with_snapshot", "failed", "deleted"], got {_quote(value.lifecycle)}'))
         out["lifecycle"] = value.lifecycle
         out["instance_id"] = value.instance_id
+        for key, entry in value.additional_properties.items():
+            if key in _SANDBOX_DESCRIPTION_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -612,6 +687,8 @@ class SandboxDescription:
     lifecycle: typing.Literal["pending", "running", "suspended", "suspended_with_snapshot", "failed", "deleted"]
 
     instance_id: str
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
 
 class _SandboxHandleTransferTypeConverter(
@@ -638,13 +715,15 @@ class _SandboxHandleTransferTypeConverter(
                 if len(sandbox_id_value_raw) < 1:
                     violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(sandbox_id_value_raw)}"))
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "sandbox_id":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _SANDBOX_HANDLE_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return SandboxHandle(
             sandbox_id=sandbox_id_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -654,6 +733,11 @@ class _SandboxHandleTransferTypeConverter(
         if len(value.sandbox_id) < 1:
             violations.append(Violation(path="sandbox_id", reason=f"must have length >= 1, got {len(value.sandbox_id)}"))
         out["sandbox_id"] = value.sandbox_id
+        for key, entry in value.additional_properties.items():
+            if key in _SANDBOX_HANDLE_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -665,6 +749,8 @@ class SandboxHandle:
     """Persistent sandbox identity, distinct from a Nexus operation token."""
 
     sandbox_id: str
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
 
 
 class _SnapshotHandleTransferTypeConverter(
@@ -691,13 +777,15 @@ class _SnapshotHandleTransferTypeConverter(
                 if len(snapshot_id_value_raw) < 1:
                     violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(snapshot_id_value_raw)}"))
 
+        additional_properties: dict[str, typing.Any] = {}
         for key in raw:
-            if key != "snapshot_id":
-                violations.append(Violation(path=key, reason="unknown field"))
+            if key not in _SNAPSHOT_HANDLE_DECLARED:
+                additional_properties[key] = raw[key]
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return SnapshotHandle(
             snapshot_id=snapshot_id_value,
+            additional_properties=additional_properties,
         )
 
     @typing_extensions.override
@@ -707,6 +795,11 @@ class _SnapshotHandleTransferTypeConverter(
         if len(value.snapshot_id) < 1:
             violations.append(Violation(path="snapshot_id", reason=f"must have length >= 1, got {len(value.snapshot_id)}"))
         out["snapshot_id"] = value.snapshot_id
+        for key, entry in value.additional_properties.items():
+            if key in _SNAPSHOT_HANDLE_DECLARED:
+                violations.append(Violation(path=key, reason="additional property collides with declared property"))
+            else:
+                out[key] = entry
         if violations:
             raise temporalio.converter.create_payload_validation_error(violations)
         return out
@@ -715,6 +808,8 @@ class _SnapshotHandleTransferTypeConverter(
 @_transfer_type_convertible(_SnapshotHandleTransferTypeConverter)
 @dataclasses.dataclass(slots=True, kw_only=True)
 class SnapshotHandle:
-    """Provider snapshot ID. Keep the provider profile when forking it."""
+    """Provider snapshot ID, as returned by Sandbox.Snapshot."""
 
     snapshot_id: str
+
+    additional_properties: dict[str, typing.Any] = dataclasses.field(default_factory=dict)

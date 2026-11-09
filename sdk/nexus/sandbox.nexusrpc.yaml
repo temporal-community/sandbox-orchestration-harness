@@ -16,9 +16,8 @@ services:
       snapshot:
         input: { $ref: "#/$defs/SandboxHandle" }
         output: { $ref: "#/$defs/SnapshotHandle" }
-      fork:
-        input: { $ref: "#/$defs/ForkInput" }
       delete:
+        # Nexgen rejects the reserved TypeScript name "delete".
         x-ts-name: deleteSandbox
         input: { $ref: "#/$defs/SandboxHandle" }
       deleteSnapshot:
@@ -27,24 +26,37 @@ services:
         input: { $ref: "#/$defs/SandboxHandle" }
         output: { $ref: "#/$defs/SandboxDescription" }
 $defs:
+  # Objects accept additional fields so older clients can read new responses.
+  ProviderDetails:
+    type: object
+    properties:
+      type: { type: string, minLength: 1 }
+      config:
+        type: object
+        additionalProperties: { type: string }
+    required: [type, config]
+  # Maps to NewSandbox. WithCleanup has no field: it sets the parent close
+  # policy, and Nexus starts the sandbox workflow without a parent.
   CreateInput:
     type: object
-    additionalProperties: false
     properties:
+      # NewSandbox generates this ID. Here the caller supplies it.
+      # A retry with the same ID and parameters reuses the same sandbox.
       sandbox_id: { type: string, minLength: 1 }
-      profile: { type: string, minLength: 1 }
-      idle_timeout_seconds: { type: integer, minimum: -1, maximum: 86400, default: 0 }
-    required: [sandbox_id, profile]
+      compute_provider: { $ref: "#/$defs/ProviderDetails" }
+      # WithIdleTimeout, in whole seconds within Go's time.Duration range.
+      idle_timeout_seconds: { type: integer, minimum: -1, maximum: 9223372036, default: 0 }
+      # WithSnapshot. Omit it to start a fresh sandbox.
+      snapshot: { $ref: "#/$defs/SnapshotHandle" }
+    required: [sandbox_id, compute_provider]
   SandboxHandle:
     description: Persistent sandbox identity, distinct from a Nexus operation token.
     type: object
-    additionalProperties: false
     properties:
       sandbox_id: { type: string, minLength: 1 }
     required: [sandbox_id]
   ExecuteInput:
     type: object
-    additionalProperties: false
     properties:
       sandbox_id: { type: string, minLength: 1 }
       command: { type: string, minLength: 1 }
@@ -52,38 +64,26 @@ $defs:
     required: [sandbox_id, command]
   CommandResult:
     type: object
-    additionalProperties: false
     properties:
       stdout: { type: string }
       stderr: { type: string }
       exit_code: { type: integer }
     required: [stdout, stderr, exit_code]
   SnapshotHandle:
-    description: Provider snapshot ID. Keep the provider profile when forking it.
+    description: Provider snapshot ID, as returned by Sandbox.Snapshot.
     type: object
-    additionalProperties: false
     properties:
       snapshot_id: { type: string, minLength: 1 }
     required: [snapshot_id]
   DeleteSnapshotInput:
     type: object
-    additionalProperties: false
     properties:
+      # The Go receiver carries this ID. Nexus needs it to route the same update.
       sandbox_id: { type: string, minLength: 1 }
       snapshot_id: { type: string, minLength: 1 }
     required: [sandbox_id, snapshot_id]
-  ForkInput:
-    type: object
-    additionalProperties: false
-    properties:
-      sandbox_id: { type: string, minLength: 1 }
-      profile: { type: string, minLength: 1 }
-      snapshot_id: { type: string, minLength: 1 }
-      idle_timeout_seconds: { type: integer, minimum: -1, maximum: 86400, default: 0 }
-    required: [sandbox_id, profile, snapshot_id]
   SandboxDescription:
     type: object
-    additionalProperties: false
     properties:
       sandbox_id: { type: string, minLength: 1 }
       lifecycle:

@@ -4,6 +4,8 @@ A Go example for running shell commands inside ephemeral, isolated compute envir
 
 For callers outside Temporal workflows, the [Nexus interface and minimal OpenAI Agents SDK example](examples/nexus-agent/README.md) expose the same provider lifecycle through generated Go/Python bindings and asynchronous operations.
 
+Regenerating Nexus bindings requires [nexgen 0.2.3](examples/nexus-agent/README.md#generate-and-test).
+
 ## Architecture
 
 The repository is a Go workspace with one library module and several example modules:

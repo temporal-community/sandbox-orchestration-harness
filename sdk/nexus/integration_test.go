@@ -2,6 +2,7 @@ package sandboxnexus
 
 import (
 	"context"
+	"maps"
 	"os"
 	"sync"
 	"testing"
@@ -24,8 +25,9 @@ import (
 // The worker runs the existing SandboxWorkflow and a fake compute provider.
 // Provisioning is blocked while Describe runs. This checks that Create releases
 // the handler slot before the provider finishes. The remaining calls check the
-// generated contract, update callbacks, snapshot/fork, and cleanup completion.
+// generated contract, update callbacks, snapshot restore, and cleanup completion.
 // Repeated Create uses the same sandbox ID and must not provision it again.
+// Provider configuration must reach the provider; changing it on retry is rejected.
 // The test makes no requests to OpenAI or a real compute provider.
 func TestNexusIntegration(t *testing.T) {
 	address := os.Getenv("SANDBOX_NEXUS_TEST_SERVER")
@@ -52,9 +54,14 @@ func TestNexusIntegration(t *testing.T) {
 	}()
 	p := &integrationProvider{started: make(chan struct{}), release: make(chan struct{})}
 	providerType := compute.ProviderType(queue)
-	compute.Register(providerType, func(map[string]string) (compute.Provider, error) { return p, nil })
+	compute.Register(providerType, func(config map[string]string) (compute.Provider, error) {
+		p.mu.Lock()
+		p.config = maps.Clone(config)
+		p.mu.Unlock()
+		return p, nil
+	})
 	w := worker.New(c, queue, worker.Options{MaxConcurrentNexusTaskExecutionSize: 1})
-	require.NoError(t, Register(w, c, Config{TaskQueue: queue, Profiles: map[string]compute.ProviderDetails{"test": {Type: providerType}}}))
+	require.NoError(t, Register(w, c, Config{TaskQueue: queue}))
 	require.NoError(t, w.Start())
 	defer w.Stop()
 	nc, err := c.NewNexusClient(client.NexusClientOptions{Endpoint: queue, Service: gen.SandboxControl.ServiceName})
@@ -68,7 +75,10 @@ func TestNexusIntegration(t *testing.T) {
 		require.NoError(t, handle.Get(ctx, output))
 	}
 	sandbox := gen.SandboxHandle{SandboxID: "sandbox-test/" + uuid.NewString()}
-	creation, err := nc.ExecuteOperation(ctx, gen.SandboxControl.Create, gen.CreateInput{SandboxID: sandbox.SandboxID, Profile: "test"},
+	provider := gen.ProviderDetails{Type: string(providerType), Config: gen.ProviderDetailsConfig{
+		AdditionalProperties: map[string]string{"template-id": "test-template"},
+	}}
+	creation, err := nc.ExecuteOperation(ctx, gen.SandboxControl.Create, gen.CreateInput{SandboxID: sandbox.SandboxID, ComputeProvider: provider},
 		client.StartNexusOperationOptions{ID: uuid.NewString(), ScheduleToCloseTimeout: time.Minute})
 	require.NoError(t, err)
 	select {
@@ -91,7 +101,15 @@ func TestNexusIntegration(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sandboxworkflow.SandboxWorkflowType, run.WorkflowExecutionInfo.Type.Name)
 	// A second Create reuses the same init update and does not provision again.
-	invoke(gen.SandboxControl.Create, gen.CreateInput{SandboxID: sandbox.SandboxID, Profile: "test"}, nil)
+	invoke(gen.SandboxControl.Create, gen.CreateInput{SandboxID: sandbox.SandboxID, ComputeProvider: provider}, nil)
+	// Changed provider configuration must not reuse an already initialized sandbox.
+	changed := provider
+	changed.Config = gen.ProviderDetailsConfig{AdditionalProperties: map[string]string{"template-id": "other-template"}}
+	rejected, err := nc.ExecuteOperation(ctx, gen.SandboxControl.Create,
+		gen.CreateInput{SandboxID: sandbox.SandboxID, ComputeProvider: changed},
+		client.StartNexusOperationOptions{ID: uuid.NewString(), ScheduleToCloseTimeout: time.Minute})
+	require.NoError(t, err)
+	require.ErrorContains(t, rejected.Get(ctx, nil), "sandbox_id already used with different parameters")
 	var command gen.CommandResult
 	invoke(gen.SandboxControl.Execute, gen.ExecuteInput{SandboxID: sandbox.SandboxID, Command: "print 42"}, &command)
 	require.Equal(t, "42\n", command.Stdout)
@@ -101,16 +119,17 @@ func TestNexusIntegration(t *testing.T) {
 	invoke(gen.SandboxControl.Resume, sandbox, nil)
 	var snapshot gen.SnapshotHandle
 	invoke(gen.SandboxControl.Snapshot, sandbox, &snapshot)
-	fork := gen.SandboxHandle{SandboxID: "sandbox-test/" + uuid.NewString()}
-	invoke(gen.SandboxControl.Fork, gen.ForkInput{SandboxID: fork.SandboxID, Profile: "test", SnapshotID: snapshot.SnapshotID}, nil)
+	restored := gen.SandboxHandle{SandboxID: "sandbox-test/" + uuid.NewString()}
+	invoke(gen.SandboxControl.Create, gen.CreateInput{SandboxID: restored.SandboxID, ComputeProvider: provider, Snapshot: &snapshot}, nil)
 	// DeleteSnapshot is the existing update on the source sandbox workflow.
 	invoke(gen.SandboxControl.DeleteSnapshot, gen.DeleteSnapshotInput{SandboxID: sandbox.SandboxID, SnapshotID: snapshot.SnapshotID}, nil)
-	invoke(gen.SandboxControl.Delete, fork, nil)
+	invoke(gen.SandboxControl.Delete, restored, nil)
 	invoke(gen.SandboxControl.Delete, sandbox, nil)
 	// Cleanup and callback delivery have both finished before Delete returns.
 	p.mu.Lock()
 	require.Equal(t, 2, p.stops)
 	require.Equal(t, 1, p.starts)
+	require.Equal(t, map[string]string{"template-id": "test-template"}, p.config)
 	p.mu.Unlock()
 }
 
@@ -120,6 +139,7 @@ type integrationProvider struct {
 	once          sync.Once
 	mu            sync.Mutex
 	starts, stops int
+	config        map[string]string
 }
 
 func (p *integrationProvider) Start(ctx context.Context, _ string) (*compute.ProviderStatus, error) {

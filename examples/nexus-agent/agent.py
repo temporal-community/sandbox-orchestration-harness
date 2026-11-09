@@ -8,7 +8,10 @@ from uuid import uuid4
 from agents import Agent, Runner, function_tool
 from temporalio.client import Client
 
-from generated.sandbox_contract import CreateInput, ExecuteInput, SandboxControl, SandboxHandle
+from generated.sandbox_contract import (
+    CreateInput, ExecuteInput, ProviderDetails, ProviderDetailsConfig,
+    SandboxControl, SandboxHandle,
+)
 
 
 async def main():
@@ -25,7 +28,15 @@ async def main():
     # Wait for provisioning to finish. The sandbox workflow stays running.
     await nexus.execute_operation(
         SandboxControl.create,
-        CreateInput(sandbox_id=sandbox.sandbox_id, profile=os.getenv("SANDBOX_PROFILE", "default")),
+        CreateInput(
+            sandbox_id=sandbox.sandbox_id,
+            compute_provider=ProviderDetails(
+                type="e2b",
+                config=ProviderDetailsConfig(
+                    additional_properties={"template-id": os.environ["E2B_TEMPLATE_ID"]},
+                ),
+            ),
+        ),
         id=f"create-{sandbox.sandbox_id}",
         schedule_to_close_timeout=timedelta(minutes=15),
     )

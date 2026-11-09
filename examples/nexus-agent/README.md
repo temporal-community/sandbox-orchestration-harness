@@ -29,8 +29,9 @@ sequenceDiagram
 ```
 
 The handler uses `temporalnexus.StartUpdateWorkflow` with
-`WorkflowUpdateStageAccepted`. It returns after acceptance and free up the Nexus handler worker. Temporal sends the update
-result through a completion callback. Create and Fork start a standalone
+`WorkflowUpdateStageAccepted`. It returns after acceptance and releases the handler
+slot. Temporal sends the update
+result through a completion callback. Create starts a standalone
 `SandboxWorkflow`, then forward provisioning to its existing `sandbox-init`
 update.
 
@@ -42,7 +43,7 @@ handler.
 
 | Operation | Implementation | Completion means |
 | --- | --- | --- |
-| Create / Fork | `sandbox-init` update | Provider start / restore finished |
+| Create | `sandbox-init` update | Provider start / restore finished |
 | Execute | `sandbox-execute-command` update | Command result available |
 | Suspend / Resume | `sandbox-suspend` / `sandbox-resume` updates | Provider transition finished |
 | Snapshot | `sandbox-snapshot` update | Snapshot ID available |
@@ -77,28 +78,26 @@ temporal operator nexus endpoint create \
   --name sandbox-control --target-namespace default --target-task-queue sandbox-control
 ```
 
-Set your E2B template ID in a copy of [profiles.example.json](profiles.example.json),
-or configure another supported provider. The E2B template must have
-Python for the example command. Start the worker from the repository root:
+Start the worker from the repository root. Provider credentials stay in its
+environment:
 
 ```bash
 export E2B_API_KEY=...
-export SANDBOX_PROFILES_FILE=/absolute/path/to/profiles.json
 go run ./sdk/cmd/nexus-worker
 ```
 
-Run the Python agent:
+Run the Python agent with an E2B template that has Python installed:
 
 ```bash
 cd examples/nexus-agent
 export OPENAI_API_KEY=...
+export E2B_TEMPLATE_ID=...
 uv run agent.py
 ```
 
 Both processes read `TEMPORAL_HOST_PORT`, `TEMPORAL_NAMESPACE`, and
 `TEMPORAL_API_KEY`. Setting an API key enables TLS. Worker settings:
-`SANDBOX_TASK_QUEUE`, `SANDBOX_PROFILES_FILE`. Agent settings:
-`SANDBOX_NEXUS_ENDPOINT`, `SANDBOX_PROFILE`.
+`SANDBOX_TASK_QUEUE`. Agent setting: `SANDBOX_NEXUS_ENDPOINT`.
 
 ## Contract and lifecycle
 
@@ -106,7 +105,11 @@ The [IDL](../../sdk/nexus/sandbox.nexusrpc.yaml) defines `sandbox.control.v1`.
 Generated bindings: [Go](../../sdk/generated/nexus),
 [Python](generated/sandbox_contract).
 
-- Choose `sandbox_id` before Create or Fork. Retry with the same ID and parameters.
+Creation uses the SDK's provider `type` and `config`. `snapshot` maps to
+`WithSnapshot`; `idle_timeout_seconds` maps to `WithIdleTimeout` in whole seconds.
+`WithCleanup` applies to child workflows; these sandboxes run standalone.
+
+- Choose `sandbox_id` before Create. Retry with the same ID and parameters.
   IDs cannot be reused after the workflow closes.
 - Only Execute, Snapshot, and Describe return values.
 - Idle suspension defaults to five minutes; `-1` disables it.
@@ -118,7 +121,12 @@ Generated bindings: [Go](../../sdk/generated/nexus),
 
 ## Generate and test
 
-Regenerate with `nexgen` 0.2.3, from the repository root:
+To install the generator, download the archive for your platform from the
+[nexgen 0.2.3 release](https://github.com/temporalio/nexgen/releases/tag/v0.2.3).
+Extract it and put the `nexgen` executable on your `PATH`. It is needed only to
+regenerate bindings. The Makefile checks the installed version.
+
+From the repository root:
 
 ```bash
 make generate-nexus
@@ -138,6 +146,6 @@ SANDBOX_NEXUS_TEST_SERVER=localhost:7233 go test ./sdk/nexus -run TestNexusInteg
 The test creates a temporary endpoint and runs the existing `SandboxWorkflow`
 with a fake provider. It blocks provisioning and checks that Describe completes
 with one Nexus handler slot. It also checks generated Go payloads, update
-callbacks, repeated creation, snapshot/fork, and cleanup completion. It makes no
+callbacks, repeated creation, snapshot restore, and cleanup completion. It makes no
 requests to OpenAI or a real compute provider. Without
 `SANDBOX_NEXUS_TEST_SERVER`, normal test runs skip it.

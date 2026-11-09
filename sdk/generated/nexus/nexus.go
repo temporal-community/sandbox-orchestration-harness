@@ -23,8 +23,6 @@ var SandboxControl = struct {
 	Resume nexus.OperationReference[SandboxHandle, nexus.NoValue]
 	// Snapshot is the "Snapshot" Nexus operation.
 	Snapshot nexus.OperationReference[SandboxHandle, SnapshotHandle]
-	// Fork is the "Fork" Nexus operation.
-	Fork nexus.OperationReference[ForkInput, nexus.NoValue]
 	// Delete is the "Delete" Nexus operation.
 	Delete nexus.OperationReference[SandboxHandle, nexus.NoValue]
 	// DeleteSnapshot is the "DeleteSnapshot" Nexus operation.
@@ -38,7 +36,6 @@ var SandboxControl = struct {
 	Suspend: nexus.NewOperationReference[SandboxHandle, nexus.NoValue]("Suspend"),
 	Resume: nexus.NewOperationReference[SandboxHandle, nexus.NoValue]("Resume"),
 	Snapshot: nexus.NewOperationReference[SandboxHandle, SnapshotHandle]("Snapshot"),
-	Fork: nexus.NewOperationReference[ForkInput, nexus.NoValue]("Fork"),
 	Delete: nexus.NewOperationReference[SandboxHandle, nexus.NoValue]("Delete"),
 	DeleteSnapshot: nexus.NewOperationReference[DeleteSnapshotInput, nexus.NoValue]("DeleteSnapshot"),
 	Describe: nexus.NewOperationReference[SandboxHandle, SandboxDescription]("Describe"),
@@ -71,6 +68,8 @@ type CommandResult struct {
 	Stderr string `json:"stderr"`
 	// ExitCode corresponds to the "exit_code" JSON property.
 	ExitCode int64 `json:"exit_code"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -79,6 +78,15 @@ func (m CommandResult) Validate() error {
 	var errs []Violation
 	if (m.ExitCode < -integerCap || m.ExitCode > integerCap) {
 		errs = append(errs, Violation{"exit_code", "exceeds ±(2^53-1) integer cap"})
+	}
+	if _, ok := m.AdditionalProperties["stdout"]; ok {
+		errs = append(errs, Violation{"stdout", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["stderr"]; ok {
+		errs = append(errs, Violation{"stderr", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["exit_code"]; ok {
+		errs = append(errs, Violation{"exit_code", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -94,11 +102,12 @@ func (m *CommandResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "stdout", "stderr", "exit_code":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -129,6 +138,9 @@ func (m CommandResult) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "stdout", m.Stdout, &errs)
 	marshalField(out, "stderr", m.Stderr, &errs)
 	marshalField(out, "exit_code", m.ExitCode, &errs)
@@ -143,10 +155,14 @@ func (m CommandResult) MarshalJSON() ([]byte, error) {
 type CreateInput struct {
 	// SandboxID corresponds to the "sandbox_id" JSON property.
 	SandboxID string `json:"sandbox_id"`
-	// Profile corresponds to the "profile" JSON property.
-	Profile string `json:"profile"`
+	// ComputeProvider corresponds to the "compute_provider" JSON property.
+	ComputeProvider ProviderDetails `json:"compute_provider"`
 	// IdleTimeoutSeconds corresponds to the "idle_timeout_seconds" JSON property.
 	IdleTimeoutSeconds *int64 `json:"idle_timeout_seconds,omitempty"`
+	// Snapshot corresponds to the "snapshot" JSON property.
+	Snapshot *SnapshotHandle `json:"snapshot,omitempty"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // IdleTimeoutSecondsOrDefault returns IdleTimeoutSeconds when set, else the schema default.
@@ -164,9 +180,7 @@ func (m CreateInput) Validate() error {
 	if n := utf8.RuneCountInString(m.SandboxID); n < 1 {
 		errs = append(errs, Violation{"sandbox_id", fmt.Sprintf("must have length >= 1, got %d", n)})
 	}
-	if n := utf8.RuneCountInString(m.Profile); n < 1 {
-		errs = append(errs, Violation{"profile", fmt.Sprintf("must have length >= 1, got %d", n)})
-	}
+	mergeNested(&errs, "compute_provider", m.ComputeProvider.Validate())
 	if m.IdleTimeoutSeconds != nil && (*m.IdleTimeoutSeconds < -integerCap || *m.IdleTimeoutSeconds > integerCap) {
 		errs = append(errs, Violation{"idle_timeout_seconds", "exceeds ±(2^53-1) integer cap"})
 	}
@@ -174,9 +188,24 @@ func (m CreateInput) Validate() error {
 		if *m.IdleTimeoutSeconds < -1 {
 			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be >= -1, got %v", *m.IdleTimeoutSeconds)})
 		}
-		if *m.IdleTimeoutSeconds > 86400 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 86400, got %v", *m.IdleTimeoutSeconds)})
+		if *m.IdleTimeoutSeconds > 9223372036 {
+			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 9223372036, got %v", *m.IdleTimeoutSeconds)})
 		}
+	}
+	if m.Snapshot != nil {
+		mergeNested(&errs, "snapshot", m.Snapshot.Validate())
+	}
+	if _, ok := m.AdditionalProperties["sandbox_id"]; ok {
+		errs = append(errs, Violation{"sandbox_id", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["compute_provider"]; ok {
+		errs = append(errs, Violation{"compute_provider", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["idle_timeout_seconds"]; ok {
+		errs = append(errs, Violation{"idle_timeout_seconds", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["snapshot"]; ok {
+		errs = append(errs, Violation{"snapshot", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -192,11 +221,12 @@ func (m *CreateInput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
-		case "sandbox_id", "profile", "idle_timeout_seconds":
+		case "sandbox_id", "compute_provider", "idle_timeout_seconds", "snapshot":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -212,20 +242,32 @@ func (m *CreateInput) UnmarshalJSON(data []byte) error {
 			errs = append(errs, Violation{"sandbox_id", fmt.Sprintf("must have length >= 1, got %d", n)})
 		}
 	}
-	if v, ok := parseStringField(get("profile"), "profile", true, false, &errs); ok {
-		m.Profile = v
-		if n := utf8.RuneCountInString(v); n < 1 {
-			errs = append(errs, Violation{"profile", fmt.Sprintf("must have length >= 1, got %d", n)})
-		}
+	if raw := get("compute_provider"); raw == nil {
+		errs = append(errs, Violation{"compute_provider", "required"})
+	} else if isNull(*raw) {
+		errs = append(errs, Violation{"compute_provider", "explicit null not allowed"})
+	} else {
+		mergeNested(&errs, "compute_provider", json.Unmarshal(*raw, &m.ComputeProvider))
 	}
 	if v, ok := parseIntegerField(get("idle_timeout_seconds"), "idle_timeout_seconds", false, false, &errs); ok {
 		if v < -1 {
 			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be >= -1, got %v", v)})
 		}
-		if v > 86400 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 86400, got %v", v)})
+		if v > 9223372036 {
+			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 9223372036, got %v", v)})
 		}
 		m.IdleTimeoutSeconds = &v
+	}
+	if raw := get("snapshot"); raw == nil {
+	} else if isNull(*raw) {
+		errs = append(errs, Violation{"snapshot", "explicit null not allowed"})
+	} else {
+		var tmp SnapshotHandle
+		if err := json.Unmarshal(*raw, &tmp); err != nil {
+			mergeNested(&errs, "snapshot", err)
+		} else {
+			m.Snapshot = &tmp
+		}
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -239,10 +281,16 @@ func (m CreateInput) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "sandbox_id", m.SandboxID, &errs)
-	marshalField(out, "profile", m.Profile, &errs)
+	marshalField(out, "compute_provider", m.ComputeProvider, &errs)
 	if m.IdleTimeoutSeconds != nil {
 		marshalField(out, "idle_timeout_seconds", *m.IdleTimeoutSeconds, &errs)
+	}
+	if m.Snapshot != nil {
+		marshalField(out, "snapshot", *m.Snapshot, &errs)
 	}
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
@@ -257,6 +305,8 @@ type DeleteSnapshotInput struct {
 	SandboxID string `json:"sandbox_id"`
 	// SnapshotID corresponds to the "snapshot_id" JSON property.
 	SnapshotID string `json:"snapshot_id"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -268,6 +318,12 @@ func (m DeleteSnapshotInput) Validate() error {
 	}
 	if n := utf8.RuneCountInString(m.SnapshotID); n < 1 {
 		errs = append(errs, Violation{"snapshot_id", fmt.Sprintf("must have length >= 1, got %d", n)})
+	}
+	if _, ok := m.AdditionalProperties["sandbox_id"]; ok {
+		errs = append(errs, Violation{"sandbox_id", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["snapshot_id"]; ok {
+		errs = append(errs, Violation{"snapshot_id", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -283,11 +339,12 @@ func (m *DeleteSnapshotInput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "sandbox_id", "snapshot_id":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -321,6 +378,9 @@ func (m DeleteSnapshotInput) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "sandbox_id", m.SandboxID, &errs)
 	marshalField(out, "snapshot_id", m.SnapshotID, &errs)
 	if len(errs) > 0 {
@@ -338,6 +398,8 @@ type ExecuteInput struct {
 	Command string `json:"command"`
 	// DisableAutoResume corresponds to the "disable_auto_resume" JSON property.
 	DisableAutoResume *bool `json:"disable_auto_resume,omitempty"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // DisableAutoResumeOrDefault returns DisableAutoResume when set, else the schema default.
@@ -358,6 +420,15 @@ func (m ExecuteInput) Validate() error {
 	if n := utf8.RuneCountInString(m.Command); n < 1 {
 		errs = append(errs, Violation{"command", fmt.Sprintf("must have length >= 1, got %d", n)})
 	}
+	if _, ok := m.AdditionalProperties["sandbox_id"]; ok {
+		errs = append(errs, Violation{"sandbox_id", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["command"]; ok {
+		errs = append(errs, Violation{"command", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["disable_auto_resume"]; ok {
+		errs = append(errs, Violation{"disable_auto_resume", "catch-all key collides with declared property"})
+	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
 	}
@@ -372,11 +443,12 @@ func (m *ExecuteInput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "sandbox_id", "command", "disable_auto_resume":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -413,6 +485,9 @@ func (m ExecuteInput) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "sandbox_id", m.SandboxID, &errs)
 	marshalField(out, "command", m.Command, &errs)
 	if m.DisableAutoResume != nil {
@@ -425,49 +500,29 @@ func (m ExecuteInput) MarshalJSON() ([]byte, error) {
 }
 
 
-// ForkInput is generated from the corresponding JSON Schema definition.
-type ForkInput struct {
-	// SandboxID corresponds to the "sandbox_id" JSON property.
-	SandboxID string `json:"sandbox_id"`
-	// Profile corresponds to the "profile" JSON property.
-	Profile string `json:"profile"`
-	// SnapshotID corresponds to the "snapshot_id" JSON property.
-	SnapshotID string `json:"snapshot_id"`
-	// IdleTimeoutSeconds corresponds to the "idle_timeout_seconds" JSON property.
-	IdleTimeoutSeconds *int64 `json:"idle_timeout_seconds,omitempty"`
-}
-
-// IdleTimeoutSecondsOrDefault returns IdleTimeoutSeconds when set, else the schema default.
-func (m ForkInput) IdleTimeoutSecondsOrDefault() int64 {
-	if m.IdleTimeoutSeconds != nil {
-		return *m.IdleTimeoutSeconds
-	}
-	return 0
+// ProviderDetails is generated from the corresponding JSON Schema definition.
+type ProviderDetails struct {
+	// Type corresponds to the "type" JSON property.
+	Type string `json:"type"`
+	// Config corresponds to the "config" JSON property.
+	Config ProviderDetailsConfig `json:"config"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
 // listing any violations.
-func (m ForkInput) Validate() error {
+func (m ProviderDetails) Validate() error {
 	var errs []Violation
-	if n := utf8.RuneCountInString(m.SandboxID); n < 1 {
-		errs = append(errs, Violation{"sandbox_id", fmt.Sprintf("must have length >= 1, got %d", n)})
+	if n := utf8.RuneCountInString(m.Type); n < 1 {
+		errs = append(errs, Violation{"type", fmt.Sprintf("must have length >= 1, got %d", n)})
 	}
-	if n := utf8.RuneCountInString(m.Profile); n < 1 {
-		errs = append(errs, Violation{"profile", fmt.Sprintf("must have length >= 1, got %d", n)})
+	mergeNested(&errs, "config", m.Config.Validate())
+	if _, ok := m.AdditionalProperties["type"]; ok {
+		errs = append(errs, Violation{"type", "catch-all key collides with declared property"})
 	}
-	if n := utf8.RuneCountInString(m.SnapshotID); n < 1 {
-		errs = append(errs, Violation{"snapshot_id", fmt.Sprintf("must have length >= 1, got %d", n)})
-	}
-	if m.IdleTimeoutSeconds != nil && (*m.IdleTimeoutSeconds < -integerCap || *m.IdleTimeoutSeconds > integerCap) {
-		errs = append(errs, Violation{"idle_timeout_seconds", "exceeds ±(2^53-1) integer cap"})
-	}
-	if m.IdleTimeoutSeconds != nil {
-		if *m.IdleTimeoutSeconds < -1 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be >= -1, got %v", *m.IdleTimeoutSeconds)})
-		}
-		if *m.IdleTimeoutSeconds > 86400 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 86400, got %v", *m.IdleTimeoutSeconds)})
-		}
+	if _, ok := m.AdditionalProperties["config"]; ok {
+		errs = append(errs, Violation{"config", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -477,17 +532,18 @@ func (m ForkInput) Validate() error {
 
 // UnmarshalJSON parses data into m and validates it, returning a
 // PayloadValidationError listing any violations.
-func (m *ForkInput) UnmarshalJSON(data []byte) error {
+func (m *ProviderDetails) UnmarshalJSON(data []byte) error {
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(data, &all); err != nil {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
-		case "sandbox_id", "profile", "snapshot_id", "idle_timeout_seconds":
+		case "type", "config":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -497,32 +553,18 @@ func (m *ForkInput) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	_ = get
-	if v, ok := parseStringField(get("sandbox_id"), "sandbox_id", true, false, &errs); ok {
-		m.SandboxID = v
+	if v, ok := parseStringField(get("type"), "type", true, false, &errs); ok {
+		m.Type = v
 		if n := utf8.RuneCountInString(v); n < 1 {
-			errs = append(errs, Violation{"sandbox_id", fmt.Sprintf("must have length >= 1, got %d", n)})
+			errs = append(errs, Violation{"type", fmt.Sprintf("must have length >= 1, got %d", n)})
 		}
 	}
-	if v, ok := parseStringField(get("profile"), "profile", true, false, &errs); ok {
-		m.Profile = v
-		if n := utf8.RuneCountInString(v); n < 1 {
-			errs = append(errs, Violation{"profile", fmt.Sprintf("must have length >= 1, got %d", n)})
-		}
-	}
-	if v, ok := parseStringField(get("snapshot_id"), "snapshot_id", true, false, &errs); ok {
-		m.SnapshotID = v
-		if n := utf8.RuneCountInString(v); n < 1 {
-			errs = append(errs, Violation{"snapshot_id", fmt.Sprintf("must have length >= 1, got %d", n)})
-		}
-	}
-	if v, ok := parseIntegerField(get("idle_timeout_seconds"), "idle_timeout_seconds", false, false, &errs); ok {
-		if v < -1 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be >= -1, got %v", v)})
-		}
-		if v > 86400 {
-			errs = append(errs, Violation{"idle_timeout_seconds", fmt.Sprintf("must be <= 86400, got %v", v)})
-		}
-		m.IdleTimeoutSeconds = &v
+	if raw := get("config"); raw == nil {
+		errs = append(errs, Violation{"config", "required"})
+	} else if isNull(*raw) {
+		errs = append(errs, Violation{"config", "explicit null not allowed"})
+	} else {
+		mergeNested(&errs, "config", json.Unmarshal(*raw, &m.Config))
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -532,18 +574,67 @@ func (m *ForkInput) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON validates m, then serializes it to JSON, returning a
 // PayloadValidationError if validation fails.
-func (m ForkInput) MarshalJSON() ([]byte, error) {
+func (m ProviderDetails) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
-	marshalField(out, "sandbox_id", m.SandboxID, &errs)
-	marshalField(out, "profile", m.Profile, &errs)
-	marshalField(out, "snapshot_id", m.SnapshotID, &errs)
-	if m.IdleTimeoutSeconds != nil {
-		marshalField(out, "idle_timeout_seconds", *m.IdleTimeoutSeconds, &errs)
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
 	}
+	marshalField(out, "type", m.Type, &errs)
+	marshalField(out, "config", m.Config, &errs)
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
+	}
+	return json.Marshal(out)
+}
+
+
+// ProviderDetailsConfig is generated from the corresponding JSON Schema definition.
+type ProviderDetailsConfig struct {
+	// AdditionalProperties holds every member of this map-shaped object.
+	AdditionalProperties map[string]string
+}
+
+// Validate checks m against every constraint and returns a PayloadValidationError
+// listing any violations.
+func (m ProviderDetailsConfig) Validate() error {
+	var errs []Violation
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// UnmarshalJSON parses data into m and validates it, returning a
+// PayloadValidationError listing any violations.
+func (m *ProviderDetailsConfig) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var errs []Violation
+	m.AdditionalProperties = make(map[string]string, len(raw))
+	for k, v := range raw {
+		if value, ok := parseStringField(&v, k, true, false, &errs); ok {
+			m.AdditionalProperties[k] = value
+		}
+	}
+	if len(errs) > 0 {
+		return newPayloadValidationError(errs)
+	}
+	return nil
+}
+
+// MarshalJSON validates m, then serializes it to JSON, returning a
+// PayloadValidationError if validation fails.
+func (m ProviderDetailsConfig) MarshalJSON() ([]byte, error) {
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(m.AdditionalProperties))
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
 	}
 	return json.Marshal(out)
 }
@@ -557,6 +648,8 @@ type SandboxDescription struct {
 	Lifecycle SandboxDescriptionLifecycle `json:"lifecycle"`
 	// InstanceID corresponds to the "instance_id" JSON property.
 	InstanceID string `json:"instance_id"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -570,6 +663,15 @@ func (m SandboxDescription) Validate() error {
 	case SandboxDescriptionLifecyclePending, SandboxDescriptionLifecycleRunning, SandboxDescriptionLifecycleSuspended, SandboxDescriptionLifecycleSuspendedWithSnapshot, SandboxDescriptionLifecycleFailed, SandboxDescriptionLifecycleDeleted:
 	default:
 		errs = append(errs, Violation{"lifecycle", fmt.Sprintf("must be one of [\"pending\",\"running\",\"suspended\",\"suspended_with_snapshot\",\"failed\",\"deleted\"], got %q", m.Lifecycle)})
+	}
+	if _, ok := m.AdditionalProperties["sandbox_id"]; ok {
+		errs = append(errs, Violation{"sandbox_id", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["lifecycle"]; ok {
+		errs = append(errs, Violation{"lifecycle", "catch-all key collides with declared property"})
+	}
+	if _, ok := m.AdditionalProperties["instance_id"]; ok {
+		errs = append(errs, Violation{"instance_id", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -585,11 +687,12 @@ func (m *SandboxDescription) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "sandbox_id", "lifecycle", "instance_id":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -629,6 +732,9 @@ func (m SandboxDescription) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "sandbox_id", m.SandboxID, &errs)
 	marshalField(out, "lifecycle", m.Lifecycle, &errs)
 	marshalField(out, "instance_id", m.InstanceID, &errs)
@@ -643,6 +749,8 @@ func (m SandboxDescription) MarshalJSON() ([]byte, error) {
 type SandboxHandle struct {
 	// SandboxID corresponds to the "sandbox_id" JSON property.
 	SandboxID string `json:"sandbox_id"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -651,6 +759,9 @@ func (m SandboxHandle) Validate() error {
 	var errs []Violation
 	if n := utf8.RuneCountInString(m.SandboxID); n < 1 {
 		errs = append(errs, Violation{"sandbox_id", fmt.Sprintf("must have length >= 1, got %d", n)})
+	}
+	if _, ok := m.AdditionalProperties["sandbox_id"]; ok {
+		errs = append(errs, Violation{"sandbox_id", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -666,11 +777,12 @@ func (m *SandboxHandle) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "sandbox_id":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -698,6 +810,9 @@ func (m SandboxHandle) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "sandbox_id", m.SandboxID, &errs)
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)
@@ -706,10 +821,12 @@ func (m SandboxHandle) MarshalJSON() ([]byte, error) {
 }
 
 
-// SnapshotHandle Provider snapshot ID. Keep the provider profile when forking it.
+// SnapshotHandle Provider snapshot ID, as returned by Sandbox.Snapshot.
 type SnapshotHandle struct {
 	// SnapshotID corresponds to the "snapshot_id" JSON property.
 	SnapshotID string `json:"snapshot_id"`
+	// AdditionalProperties holds unknown members verbatim.
+	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
 
 // Validate checks m against every constraint and returns a PayloadValidationError
@@ -718,6 +835,9 @@ func (m SnapshotHandle) Validate() error {
 	var errs []Violation
 	if n := utf8.RuneCountInString(m.SnapshotID); n < 1 {
 		errs = append(errs, Violation{"snapshot_id", fmt.Sprintf("must have length >= 1, got %d", n)})
+	}
+	if _, ok := m.AdditionalProperties["snapshot_id"]; ok {
+		errs = append(errs, Violation{"snapshot_id", "catch-all key collides with declared property"})
 	}
 	if len(errs) > 0 {
 		return newPayloadValidationError(errs)
@@ -733,11 +853,12 @@ func (m *SnapshotHandle) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var errs []Violation
-	for k := range all {
+	m.AdditionalProperties = map[string]json.RawMessage{}
+	for k, v := range all {
 		switch k {
 		case "snapshot_id":
 		default:
-			errs = append(errs, Violation{k, "unknown field"})
+			m.AdditionalProperties[k] = v
 		}
 	}
 	get := func(k string) *json.RawMessage {
@@ -765,6 +886,9 @@ func (m SnapshotHandle) MarshalJSON() ([]byte, error) {
 	var errs []Violation
 	addViolations(&errs, m.Validate())
 	out := map[string]json.RawMessage{}
+	for k, v := range m.AdditionalProperties {
+		out[k] = v
+	}
 	marshalField(out, "snapshot_id", m.SnapshotID, &errs)
 	if len(errs) > 0 {
 		return nil, newPayloadValidationError(errs)

@@ -3,9 +3,10 @@ package sandboxnexus
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"time"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -25,7 +26,6 @@ const creationMemo = "sandbox.nexus.creation"
 
 type Config struct {
 	TaskQueue string
-	Profiles  map[string]compute.ProviderDetails
 }
 
 // Register adds the existing SDK workflow, its activities, and the Nexus service.
@@ -45,25 +45,10 @@ func NewService(c client.Client, cfg Config) (*nexus.Service, error) {
 	if cfg.TaskQueue == "" {
 		return nil, fmt.Errorf("Nexus task queue is required")
 	}
-	if len(cfg.Profiles) == 0 {
-		return nil, fmt.Errorf("at least one sandbox profile is required")
-	}
-	profiles := make(map[string]compute.ProviderDetails, len(cfg.Profiles))
-	for name, provider := range cfg.Profiles {
-		if name == "" || !compute.IsRegistered(provider.Type) {
-			return nil, fmt.Errorf("invalid sandbox profile %q (provider %q)", name, provider.Type)
-		}
-		provider.Config = maps.Clone(provider.Config)
-		profiles[name] = provider
-	}
-	cfg.Profiles = profiles
 	service := nexus.NewService(gen.SandboxControl.ServiceName)
 	service.MustRegister(
 		createOperation(gen.SandboxControl.Create, cfg, func(input gen.CreateInput) creation {
-			return creation{SandboxID: input.SandboxID, Profile: input.Profile, IdleTimeoutSeconds: input.IdleTimeoutSecondsOrDefault()}
-		}),
-		createOperation(gen.SandboxControl.Fork, cfg, func(input gen.ForkInput) creation {
-			return creation{SandboxID: input.SandboxID, Profile: input.Profile, IdleTimeoutSeconds: input.IdleTimeoutSecondsOrDefault(), SnapshotID: input.SnapshotID}
+			return creationInput(input.SandboxID, input.ComputeProvider, input.IdleTimeoutSecondsOrDefault(), input.Snapshot)
 		}),
 		updateOperation(gen.SandboxControl.Execute, sandboxworkflow.SandboxExecuteCommandUpdate, func(input gen.ExecuteInput) (string, any) {
 			return input.SandboxID, sandboxworkflow.SandboxExecuteCommandInput{Command: input.Command, DisableAutoResume: input.DisableAutoResumeOrDefault()}
@@ -71,6 +56,7 @@ func NewService(c client.Client, cfg Config) (*nexus.Service, error) {
 		updateOperation(gen.SandboxControl.Suspend, sandboxworkflow.SandboxSuspendUpdate, emptyArgument),
 		updateOperation(gen.SandboxControl.Resume, sandboxworkflow.SandboxResumeUpdate, emptyArgument),
 		updateOperation(gen.SandboxControl.Snapshot, sandboxworkflow.SandboxSnapshotUpdate, emptyArgument),
+		// The Go method gets the sandbox ID from its receiver. Nexus passes it explicitly.
 		updateOperation(gen.SandboxControl.DeleteSnapshot, sandboxworkflow.SandboxDeleteSnapshotUpdate, func(input gen.DeleteSnapshotInput) (string, any) {
 			return input.SandboxID, &compute.ProviderSnapshot{SnapshotID: input.SnapshotID}
 		}),
@@ -106,17 +92,29 @@ func NewService(c client.Client, cfg Config) (*nexus.Service, error) {
 	return service, nil
 }
 
-// creation is stored in workflow memo to check repeated creation requests.
-// Memo excludes provider configuration.
+// Only a hash of the creation parameters is stored in workflow memo.
 type creation struct {
 	SandboxID          string
-	Profile            string
+	Provider           compute.ProviderDetails
 	IdleTimeoutSeconds int64
-	SnapshotID         string
+	Snapshot           *compute.ProviderSnapshot
 }
 
-// createOperation synchronously starts a new SandboxWorkflow and then asynchronously
-// sends its init update. The handler returns async after the update is accepted by the workflow.
+func creationInput(id string, provider gen.ProviderDetails, timeout int64, snapshot *gen.SnapshotHandle) creation {
+	input := creation{
+		SandboxID: id,
+		Provider: compute.ProviderDetails{
+			Type: compute.ProviderType(provider.Type), Config: provider.Config.AdditionalProperties,
+		},
+		IdleTimeoutSeconds: timeout,
+	}
+	if snapshot != nil {
+		input.Snapshot = &compute.ProviderSnapshot{SnapshotID: snapshot.SnapshotID}
+	}
+	return input
+}
+
+// createOperation starts SandboxWorkflow, then returns after its init update is accepted.
 //
 // TODO(long-nt-tran): Use async update-with-start-over-Nexus once available so we can do this atomically.
 func createOperation[I interface{ Validate() error }](reference nexus.OperationReference[I, nexus.NoValue], cfg Config, request func(I) creation) nexus.Operation[I, nexus.NoValue] {
@@ -127,17 +125,21 @@ func createOperation[I interface{ Validate() error }](reference nexus.OperationR
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, badRequest(err.Error())
 			}
 			spec := request(input)
-			provider, ok := cfg.Profiles[spec.Profile]
-			if !ok {
-				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, badRequest("unknown sandbox profile")
+			if !compute.IsRegistered(spec.Provider.Type) {
+				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, badRequest("unknown compute provider")
 			}
+			data, err := json.Marshal(spec)
+			if err != nil {
+				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, err
+			}
+			fingerprint := fmt.Sprintf("%x", sha256.Sum256(data))
 			c := nc.GetWorkflowClient()
 			// Start the same workflow used by the SDK. Its init update performs provisioning.
-			_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			_, err = c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 				ID: spec.SandboxID, TaskQueue: cfg.TaskQueue,
 				WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
 				WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-				Memo:                     map[string]interface{}{creationMemo: spec},
+				Memo:                     map[string]any{creationMemo: fingerprint},
 			}, sandboxworkflow.SandboxWorkflow, sandboxworkflow.SandboxLocalState{})
 			if err != nil {
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, operationError(err)
@@ -146,7 +148,7 @@ func createOperation[I interface{ Validate() error }](reference nexus.OperationR
 			if err != nil {
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, err
 			}
-			var previous creation
+			var previous string
 			payload := run.Memo.GetFields()[creationMemo]
 			if payload == nil {
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, badRequest("sandbox_id already used by another creation request")
@@ -154,19 +156,18 @@ func createOperation[I interface{ Validate() error }](reference nexus.OperationR
 			if err := run.GetMemoValue(creationMemo, &previous); err != nil {
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, err
 			}
-			if previous != spec {
+			if previous != fingerprint {
 				return temporalnexus.TemporalOperationResult[nexus.NoValue]{}, badRequest("sandbox_id already used with different parameters")
 			}
-			init := sandboxworkflow.SandboxInitInput{ComputeProvider: provider, IdleTimeout: idleTimeout(spec.IdleTimeoutSeconds)}
-			if spec.SnapshotID != "" {
-				init.Snapshot = &compute.ProviderSnapshot{SnapshotID: spec.SnapshotID}
+			init := sandboxworkflow.SandboxInitInput{
+				ComputeProvider: spec.Provider, IdleTimeout: idleTimeout(spec.IdleTimeoutSeconds), Snapshot: spec.Snapshot,
 			}
 			return startUpdate[nexus.NoValue](ctx, nc, spec.SandboxID, run.WorkflowExecution.RunID, sandboxworkflow.SandboxInitUpdate, "nexus-init", init)
 		},
 	})
 }
 
-// updateOperation forwards a Nexus operation to an existing update of the same name in SandboxWorkflow.
+// updateOperation translates a Nexus request and calls the existing workflow update.
 func updateOperation[I interface{ Validate() error }, O any](reference nexus.OperationReference[I, O], name string, argument func(I) (string, any)) nexus.Operation[I, O] {
 	return temporalnexus.MustNewTemporalOperation(temporalnexus.TemporalOperationOptions[I, O]{
 		Name: reference.Name(),
