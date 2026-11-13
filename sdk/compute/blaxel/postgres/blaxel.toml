@@ -1,0 +1,5 @@
+type = "sandbox"
+name = "temporal-postgres"
+
+[runtime]
+memory = 2048
