@@ -13,11 +13,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,39 +24,18 @@ import (
 
 const providerType = compute.ProviderTypeSmolCloud
 
-func init() { compute.Register(providerType, New) }
+func init() {
+	compute.Register(providerType, New)
+	compute.RegisterPolicy(providerType, resolvePolicy)
+}
 
 // New constructs the provider. The image is the only required config value;
 // network defaults to blocked. Use "network": "open" for guest internet.
+// Bootstrap, lifecycle, and branchable are independent settings.
 func New(config map[string]string) (compute.Provider, error) {
-	image := strings.TrimSpace(config["image"])
-	if image == "" {
-		return nil, fmt.Errorf("smol-cloud: image is required")
-	}
-	network := config["network"]
-	if network == "" {
-		network = "blocked"
-	}
-	if network != "open" && network != "blocked" && network != "allowCidrs" {
-		return nil, fmt.Errorf("smol-cloud: network must be open, blocked, or allowCidrs")
-	}
-	cidrs := splitList(config["allow-cidrs"])
-	hosts := splitList(config["allow-hosts"])
-	if network == "allowCidrs" && len(cidrs)+len(hosts) == 0 {
-		return nil, fmt.Errorf("smol-cloud: allowCidrs requires allow-cidrs or allow-hosts")
-	}
-	if network != "allowCidrs" && len(cidrs)+len(hosts) != 0 {
-		return nil, fmt.Errorf("smol-cloud: allow-cidrs and allow-hosts require network=allowCidrs")
-	}
-	for _, prefix := range cidrs {
-		if _, err := netip.ParsePrefix(prefix); err != nil {
-			return nil, fmt.Errorf("smol-cloud: invalid CIDR %q: %w", prefix, err)
-		}
-	}
-	for _, host := range hosts {
-		if strings.ContainsAny(host, " /*:") || !strings.Contains(host, ".") {
-			return nil, fmt.Errorf("smol-cloud: invalid host %q", host)
-		}
+	c, err := resolveConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	base := os.Getenv("SMOL_CLOUD_URL")
 	if base == "" {
@@ -75,33 +52,42 @@ func New(config map[string]string) (compute.Provider, error) {
 		return nil, fmt.Errorf("smol-cloud: set SMOL_CLOUD_TOKEN on the activity worker")
 	}
 	p := &provider{
-	    baseURL: strings.TrimRight(base, "/"),
-	    token: os.Getenv("SMOL_CLOUD_TOKEN"),
-	    image: image,
-	    network: network,
-	    cidrs: cidrs,
-	    hosts: hosts,
-	    cpus: 1,
-	    memoryMB: 512,
-	    client: &http.Client{},
-	}
-	for key, dst := range map[string]*int{"cpus": &p.cpus, "memory-mb": &p.memoryMB, "disk-gb": &p.diskGB} {
-		if config[key] != "" {
-			v, err := strconv.Atoi(config[key])
-			if err != nil || v <= 0 {
-				return nil, fmt.Errorf("smol-cloud: %s must be a positive integer", key)
-			}
-			*dst = v
-		}
+		resolvedConfig: c,
+		baseURL:        strings.TrimRight(base, "/"),
+		token:          os.Getenv("SMOL_CLOUD_TOKEN"),
+		client:         &http.Client{},
 	}
 	return p, nil
 }
 
 type provider struct {
-	baseURL, token, image, network string
-	cidrs, hosts                   []string
-	cpus, memoryMB, diskGB         int
-	client                         *http.Client
+	resolvedConfig
+	baseURL, token string
+	client         *http.Client
+}
+
+// configurationBinding binds the queue identity to the admitted nonsecret request.
+type configurationBinding struct {
+	Version    int
+	Queue      string
+	Bootstrap  bootstrapMode
+	Lifecycle  compute.LifecyclePolicy
+	Branchable bool
+	Source     machineSource
+	Resources  machineResources
+	Network    networkPolicy
+}
+
+// configurationLabel hashes a canonical binding; allowlist order has no meaning.
+func (p *provider) configurationLabel(queue string) string {
+	network := p.networkPolicy()
+	network.CIDRs, network.Hosts = slices.Clone(network.CIDRs), slices.Clone(network.Hosts)
+	slices.Sort(network.CIDRs)
+	slices.Sort(network.Hosts)
+	binding := configurationBinding{2, queue, p.bootstrap, p.policy.Lifecycle, !p.policy.NoBranching, machineSource{"image", p.image}, machineResources{p.cpus, p.memoryMB, p.diskGB}, network}
+	encoded, _ := json.Marshal(binding)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 var _ compute.Provider = (*provider)(nil)
@@ -115,32 +101,31 @@ func (p *provider) cleanup(id string) {
 	_ = p.request(ctx, http.MethodDelete, machinePath(id), nil, nil)
 }
 
+// Start creates or adopts the configured machine using the stable queue name.
+// Explicit settings require unique ownership and matching configuration on adoption.
 func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.ProviderStatus, error) {
 	name, err := machineName(taskQueueName, "")
 	if err != nil {
 		return nil, err
 	}
-	resources := map[string]any{}
-	if p.cpus != 0 {
-		resources["cpus"] = p.cpus
+	request := createMachineRequest{
+		Name:       name,
+		Source:     machineSource{Type: "image", Reference: p.image},
+		Resources:  machineResources{CPUs: p.cpus, MemoryMB: p.memoryMB, DiskGB: p.diskGB},
+		Network:    p.networkPolicy(),
+		Branchable: !p.policy.NoBranching,
+		Env:        map[string]string{"TEMPORAL_TASK_QUEUE": taskQueueName},
+		Labels:     map[string]string{"temporal-harness": "smol-cloud"},
 	}
-	if p.memoryMB != 0 {
-		resources["memoryMb"] = p.memoryMB
+	if p.bootstrap == bootstrapNone {
+		request.Env = map[string]string{}
 	}
-	if p.diskGB != 0 {
-		resources["diskGb"] = p.diskGB
+	if p.bindConfiguration {
+		request.Labels["temporal-harness-config"] = p.configurationLabel(taskQueueName)
 	}
 	var created createdMachine
-	err = p.request(ctx, http.MethodPost, "/v1/machines", map[string]any{
-		"name":       name,
-		"source":     map[string]string{"type": "image", "reference": p.image},
-		"resources":  resources,
-		"network":    p.networkPolicy(),
-		"branchable": true,
-		"env":        map[string]string{"TEMPORAL_TASK_QUEUE": taskQueueName},
-		"labels":     map[string]string{"temporal-harness": "smol-cloud"},
-	}, &created)
-	return p.adopt(ctx, name, "create", "created", created, err)
+	err = p.request(ctx, http.MethodPost, "/v1/machines", request, &created)
+	return p.adopt(ctx, name, taskQueueName, "create", "created", created, err)
 }
 
 func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
@@ -156,6 +141,9 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) err
 }
 
 func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) error {
+	if err := p.policy.ValidateOperation(compute.OperationSuspend); err != nil {
+		return err
+	}
 	id, err := machineID(status)
 	if err != nil {
 		return err
@@ -164,6 +152,9 @@ func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) 
 }
 
 func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) error {
+	if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+		return err
+	}
 	id, err := machineID(status)
 	if err != nil {
 		return err
@@ -175,6 +166,9 @@ func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) e
 }
 
 func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
+	if err := p.policy.ValidateOperation(compute.OperationSnapshot); err != nil {
+		return compute.SandboxPostSnapshotRunning, nil, err
+	}
 	id, err := machineID(status)
 	if err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
@@ -192,7 +186,13 @@ func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus)
 	return compute.SandboxPostSnapshotRunning, &compute.ProviderSnapshot{SnapshotID: checkpoint.ID}, nil
 }
 
+// StartFromSnapshot restores when lifecycle and branchability permit it. The API
+// does not accept label overrides on restore; explicit configurations refuse
+// conflict adoption unless the existing machine already has a matching binding.
 func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *compute.ProviderSnapshot) (*compute.ProviderStatus, error) {
+	if err := p.policy.ValidateOperation(compute.OperationRestore); err != nil {
+		return nil, err
+	}
 	if snapshot == nil || snapshot.SnapshotID == "" {
 		return nil, fmt.Errorf("smol-cloud: snapshot id is required")
 	}
@@ -202,10 +202,13 @@ func (p *provider) StartFromSnapshot(ctx context.Context, taskQueueName string, 
 	}
 	var created createdMachine
 	err = p.request(ctx, http.MethodPost, "/v1/checkpoints/"+url.PathEscape(snapshot.SnapshotID)+"/restore", map[string]any{"name": name, "network": p.networkPolicy()}, &created)
-	return p.adopt(ctx, name, "restore", "restored", created, err)
+	return p.adopt(ctx, name, taskQueueName, "restore", "restored", created, err)
 }
 
 func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.ProviderSnapshot) error {
+	if err := p.policy.ValidateOperation(compute.OperationDeleteSnapshot); err != nil {
+		return err
+	}
 	if snapshot == nil || snapshot.SnapshotID == "" {
 		return fmt.Errorf("smol-cloud: snapshot id is required")
 	}
@@ -245,20 +248,18 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	return &compute.CommandResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, nil
 }
 
-type createdMachine struct {
-	ID      string        `json:"id"`
-	Network networkPolicy `json:"network"`
-}
-
 // adopt finishes a create or restore. On a 409 it attaches to the machine an
 // earlier attempt of this activity created, then checks its network policy and
 // starts it. A machine this attempt created is deleted if either step fails.
-func (p *provider) adopt(ctx context.Context, name, op, past string, created createdMachine, err error) (*compute.ProviderStatus, error) {
+func (p *provider) adopt(ctx context.Context, name, queue, op, past string, created createdMachine, err error) (*compute.ProviderStatus, error) {
 	recovered := isStatus(err, http.StatusConflict)
 	if recovered {
-		created.ID, created.Network, err = p.findOwned(ctx, name)
+		created.ID, created.Network, err = p.findOwned(ctx, name, queue)
 	}
 	if err != nil {
+		if p.bindConfiguration && !recovered && created.ID != "" {
+			p.cleanup(created.ID)
+		}
 		return nil, fmt.Errorf("smol-cloud: %s: %w", op, err)
 	}
 	if created.ID == "" {
@@ -295,13 +296,20 @@ func (p *provider) startRecovered(ctx context.Context, id string) error {
 		return p.waitReady(ctx, id)
 	}
 	if state.State == "paused" {
+		if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+			return fmt.Errorf("smol-cloud: cannot adopt paused machine: %w", err)
+		}
 		return p.Resume(ctx, &compute.ProviderStatus{InstanceID: id})
 	}
 	return p.start(ctx, id)
 }
 
 func (p *provider) start(ctx context.Context, id string) error {
-	if err := p.request(ctx, http.MethodPost, machinePath(id)+"/start?forkable=true", nil, nil); err != nil && !isStatus(err, http.StatusConflict) {
+	path := machinePath(id) + "/start"
+	if !p.policy.NoBranching {
+		path += "?forkable=true"
+	}
+	if err := p.request(ctx, http.MethodPost, path, nil, nil); err != nil && !isStatus(err, http.StatusConflict) {
 		return fmt.Errorf("smol-cloud: start: %w", err)
 	}
 	return p.waitReady(ctx, id)
@@ -309,7 +317,7 @@ func (p *provider) start(ctx context.Context, id string) error {
 
 // findOwned recovers an already-created VM after Temporal retries an activity.
 // Never attach to a machine merely because a human assigned the same name.
-func (p *provider) findOwned(ctx context.Context, name string) (string, networkPolicy, error) {
+func (p *provider) findOwned(ctx context.Context, name, queue string) (string, networkPolicy, error) {
 	var rows []struct {
 		ID      string            `json:"id"`
 		Name    string            `json:"name"`
@@ -319,8 +327,22 @@ func (p *provider) findOwned(ctx context.Context, name string) (string, networkP
 	if err := p.request(ctx, http.MethodGet, "/v1/machines", nil, &rows); err != nil {
 		return "", networkPolicy{}, err
 	}
+	if p.bindConfiguration {
+		matches := 0
+		for _, machine := range rows {
+			if machine.Name == name {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return "", networkPolicy{}, fmt.Errorf("smol-cloud: explicit configuration requires exactly one matching machine, got %d", matches)
+		}
+	}
 	for _, machine := range rows {
 		if machine.Name == name && machine.Labels["temporal-harness"] == "smol-cloud" && machine.ID != "" {
+			if p.bindConfiguration && machine.Labels["temporal-harness-config"] != p.configurationLabel(queue) {
+				return "", networkPolicy{}, fmt.Errorf("smol-cloud: existing machine configuration differs from requested configuration")
+			}
 			if !p.sameNetwork(machine.Network) {
 				return "", networkPolicy{}, fmt.Errorf("smol-cloud: existing machine network policy differs from requested policy")
 			}
@@ -328,12 +350,6 @@ func (p *provider) findOwned(ctx context.Context, name string) (string, networkP
 		}
 	}
 	return "", networkPolicy{}, fmt.Errorf("smol-cloud: name %q is taken by another machine", name)
-}
-
-type networkPolicy struct {
-	Mode  string   `json:"mode"`
-	CIDRs []string `json:"cidrs,omitempty"`
-	Hosts []string `json:"hosts,omitempty"`
 }
 
 func splitList(raw string) []string {
@@ -377,6 +393,11 @@ func (p *provider) waitReady(ctx context.Context, id string) error {
 		}
 		if state.State == "failed" || state.State == "deleted" || state.State == "stopped" {
 			return fmt.Errorf("smol-cloud: machine %s entered %s", id, state.State)
+		}
+		if state.State == "paused" {
+			if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+				return fmt.Errorf("smol-cloud: cannot adopt paused machine: %w", err)
+			}
 		}
 		if state.Ready != nil && *state.Ready {
 			return nil
