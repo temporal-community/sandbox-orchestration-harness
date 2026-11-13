@@ -11,7 +11,7 @@ require (
 	github.com/daytonaio/daytona/libs/sdk-go v0.170.0
 	github.com/e2b-dev/infra/packages/shared v0.0.0-20260427142859-74ceb52ae040
 	github.com/google/uuid v1.6.0
-	github.com/modal-labs/modal-client/go v0.7.4
+	github.com/modal-labs/modal-client/go v0.11.1
 	go.temporal.io/api v1.62.9
 	go.temporal.io/sdk v1.42.0
 	k8s.io/apimachinery v0.36.2
@@ -42,8 +42,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/daytonaio/daytona/libs/api-client-go v0.170.0 // indirect
 	github.com/daytonaio/daytona/libs/toolbox-api-client-go v0.170.0 // indirect
-	github.com/djherbis/buffer v1.2.0 // indirect
-	github.com/djherbis/nio/v3 v3.0.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
@@ -63,6 +61,7 @@ require (
 	github.com/go-openapi/swag/typeutils v0.27.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.27.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
