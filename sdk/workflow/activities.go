@@ -22,13 +22,18 @@ func wrapProviderConfig(err error) error {
 // lookupProvider checks configuration policy before constructing the provider.
 // Activities are registered entry points that other Workflows and retries can call
 // directly, so they enforce the policy independently of the controller.
-func lookupProvider(details compute.ProviderDetails, operation compute.Operation) (compute.Provider, error) {
+func lookupProvider(details compute.ProviderDetails, operation compute.Operation, statuses ...*compute.ProviderStatus) (compute.Provider, error) {
 	policy, err := compute.ResolvePolicy(details)
 	if err != nil {
 		return nil, wrapProviderConfig(err)
 	}
 	if err := policy.ValidateOperation(operation); err != nil {
 		return nil, wrapUnsupported(err)
+	}
+	for _, status := range statuses {
+		if err := compute.ValidateResourceBinding(details, status); err != nil {
+			return nil, wrapProviderConfig(err)
+		}
 	}
 	provider, err := compute.Lookup(details.Type, details.Config)
 	if err != nil {
@@ -64,9 +69,9 @@ func StartSandbox(ctx context.Context, input StartSandboxInput) (StartSandboxOut
 }
 
 func StopSandbox(ctx context.Context, input StopSandboxInput) error {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationStop, input.Status)
 	if err != nil {
-		return wrapProviderConfig(err)
+		return err
 	}
 	return wrapUnsupported(provider.Stop(ctx, input.Status))
 }
@@ -77,7 +82,7 @@ type SuspendSandboxInput struct {
 }
 
 func SuspendSandbox(ctx context.Context, input SuspendSandboxInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationSuspend)
+	provider, err := lookupProvider(input.Provider, compute.OperationSuspend, input.Status)
 	if err != nil {
 		return err
 	}
@@ -90,7 +95,7 @@ type ResumeSandboxInput struct {
 }
 
 func ResumeSandbox(ctx context.Context, input ResumeSandboxInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationResume)
+	provider, err := lookupProvider(input.Provider, compute.OperationResume, input.Status)
 	if err != nil {
 		return err
 	}
@@ -108,9 +113,9 @@ type ExecuteCommandOutput struct {
 }
 
 func ExecuteCommand(ctx context.Context, input ExecuteCommandInput) (ExecuteCommandOutput, error) {
-	provider, err := compute.Lookup(input.Provider.Type, input.Provider.Config)
+	provider, err := lookupProvider(input.Provider, compute.OperationCommand, input.Status)
 	if err != nil {
-		return ExecuteCommandOutput{}, wrapProviderConfig(err)
+		return ExecuteCommandOutput{}, err
 	}
 	result, err := provider.ExecuteCommand(ctx, input.Status, input.Command)
 	if err != nil {
@@ -130,7 +135,7 @@ type SnapshotSandboxOutput struct {
 }
 
 func SnapshotSandbox(ctx context.Context, input SnapshotSandboxInput) (SnapshotSandboxOutput, error) {
-	provider, err := lookupProvider(input.Provider, compute.OperationSnapshot)
+	provider, err := lookupProvider(input.Provider, compute.OperationSnapshot, input.Status)
 	if err != nil {
 		return SnapshotSandboxOutput{}, err
 	}

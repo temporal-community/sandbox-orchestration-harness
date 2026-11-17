@@ -79,7 +79,19 @@ jobs:
               "TestRetainedBaselineReplay/baseline-parent.json",
               "TestRetainedBaselineReplay/baseline-controller.json",
               "TestRetainedSmolCloudBaselineReplay",
+              "TestRetainedFreshControllerReplay",
+              "TestRetainedFreshControllerReplay/baseline-fresh-controller.json",
+              "TestRetainedFreshControllerReplay/baseline-fresh-canceled-controller.json",
+              "TestLocalAttachmentOwnershipHistory",
+              "TestLocalPendingStartCancellationCleanup/failed-start=false/canceled=true",
+              "TestLocalPendingStartCancellationCleanup/failed-start=true/canceled=true",
+              "TestLocalPendingStartCancellationCleanup/failed-start=true/canceled=false",
           }
+          required.update(
+              f"TestLocalAttachmentOwnershipHistory/fresh={fresh}/{shutdown}"
+              for fresh in ("false", "true")
+              for shutdown in ("explicit-stop", "owner-completion", "owner-cancellation", "delegated-stop")
+          )
           package = "github.com/temporal-community/sandbox-orchestration-harness/sdk"
           passed = set()
           for line in (Path(os.environ["RUNNER_TEMP"]) / "sdk-tests.jsonl").read_text().splitlines():

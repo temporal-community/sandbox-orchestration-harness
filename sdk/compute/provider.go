@@ -3,6 +3,7 @@ package compute
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -36,7 +37,16 @@ type (
 	}
 
 	ProviderStatus struct {
-		InstanceID string `json:"instance_id"`
+		InstanceID      string           `json:"instance_id"`
+		ResourceBinding *ResourceBinding `json:"resource_binding,omitempty"`
+	}
+	// ResourceBinding carries nonsecret reconciliation context for a fresh resource.
+	// It detects conflicting inputs in a trusted environment; it is not authentication.
+	ResourceBinding struct {
+		ProviderType        ProviderType `json:"provider_type"`
+		TaskQueueName       string       `json:"task_queue_name"`
+		InstanceID          string       `json:"instance_id"`
+		ConfigurationDigest string       `json:"configuration_digest"`
 	}
 	ProviderSnapshot struct {
 		SnapshotID string `json:"snapshot_id"`
@@ -52,8 +62,9 @@ type (
 	// from an init function) so the SDK can locate the provider by type name.
 	//
 	// Lifecycle contract:
-	//   - Start must return a ProviderStatus whose InstanceID is sufficient to
-	//     identify the sandbox in all subsequent calls (Stop, Suspend, ExecuteCommand, etc.).
+	//   - Start must return a ProviderStatus that identifies the sandbox in all
+	//     subsequent calls (Stop, Suspend, ExecuteCommand, etc.). Retain the complete
+	//     returned status, including any resource binding required by the provider.
 	//   - taskQueueName passed to Start and StartFromSnapshot is a stable input that
 	//     providers may use for identity or Temporal Worker routing when configured.
 	//     Provider configuration chooses the workload; Start need not start a Temporal Worker.
@@ -87,3 +98,25 @@ const (
 	ProviderTypeSmolCloud        ProviderType = "smol-cloud"
 	ProviderTypeGKEAgentSandbox  ProviderType = "gke-agent-sandbox"
 )
+
+// ValidateResourceBinding checks the resource context available before provider construction.
+// Provider-specific configuration and remote metadata checks remain with the provider.
+func ValidateResourceBinding(details ProviderDetails, status *ProviderStatus) error {
+	if status != nil && status.ResourceBinding != nil {
+		binding := status.ResourceBinding
+		if binding.ProviderType == "" || binding.TaskQueueName == "" || binding.InstanceID == "" || binding.ConfigurationDigest == "" {
+			return fmt.Errorf("compute: incomplete resource binding")
+		}
+		if binding.ProviderType != details.Type || binding.InstanceID != status.InstanceID {
+			return fmt.Errorf("compute: resource binding conflicts with provider or instance")
+		}
+	}
+	policy, err := ResolvePolicy(details)
+	if err != nil {
+		return err
+	}
+	if details.Type == ProviderTypeSmolCloud && policy.Lifecycle == LifecycleFresh && (status == nil || status.ResourceBinding == nil) {
+		return fmt.Errorf("compute: fresh resource binding is required")
+	}
+	return nil
+}

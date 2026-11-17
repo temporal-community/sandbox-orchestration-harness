@@ -12,6 +12,8 @@ import (
 
 type sandboxLifecycle int
 
+const waitForFreshStartChange = "wait-for-fresh-start-cancellation"
+
 const (
 	sandboxPending   sandboxLifecycle = iota // before init update is processed
 	sandboxRunning                           // initialized, not suspended
@@ -71,11 +73,20 @@ func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 	}
 
 	// Block until the init update has been processed.
-	if err := workflow.Await(ctx, func() bool { return s.lifecycle != sandboxPending }); err != nil {
-		return err
+	initErr := workflow.Await(ctx, func() bool { return s.lifecycle != sandboxPending })
+	if initErr != nil {
+		if !temporal.IsCanceledError(initErr) || s.policy.Lifecycle != compute.LifecycleFresh || workflow.GetVersion(ctx, waitForFreshStartChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+			return initErr
+		}
+		// Keep the owner alive until initialization records its terminal result.
+		drainCtx, cancelDrain := workflow.NewDisconnectedContext(ctx)
+		defer cancelDrain()
+		if err := workflow.Await(drainCtx, func() bool { return workflow.AllHandlersFinished(drainCtx) }); err != nil {
+			return err
+		}
 	}
 	if s.lifecycle == sandboxFailed {
-		return nil
+		return initErr
 	}
 
 	logger.Info("sandbox initialised", "parentWorkflowID", s.state.WorkflowID, "parentRunID", s.state.RunID)
@@ -94,6 +105,9 @@ func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 	var canceledErr *temporal.CanceledError
 	if errors.As(awaitErr, &canceledErr) {
 		awaitErr = nil
+	}
+	if initErr != nil {
+		awaitErr = initErr
 	}
 	s.cancelIdleTimerIfActive()
 
@@ -203,10 +217,12 @@ func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput)
 		s.state.Status = out.Status
 	} else {
 		var out StartSandboxOutput
+		startCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: startSandboxTimeout})
+		if policy.Lifecycle == compute.LifecycleFresh && workflow.GetVersion(ctx, waitForFreshStartChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+			startCtx = workflow.WithWaitForCancellation(startCtx, true)
+		}
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				StartToCloseTimeout: startSandboxTimeout,
-			}),
+			startCtx,
 			StartSandbox,
 			StartSandboxInput{
 				Provider:      inp.ComputeProvider,

@@ -133,6 +133,12 @@ func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) err
 	if err != nil {
 		return err
 	}
+	if err := p.validateBoundResource(ctx, status); err != nil {
+		if isStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		return err
+	}
 	err = p.request(ctx, http.MethodDelete, machinePath(id), nil, nil)
 	if isStatus(err, http.StatusNotFound) {
 		return nil
@@ -144,6 +150,9 @@ func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) 
 	if err := p.policy.ValidateOperation(compute.OperationSuspend); err != nil {
 		return err
 	}
+	if err := p.validateBinding(status); err != nil {
+		return err
+	}
 	id, err := machineID(status)
 	if err != nil {
 		return err
@@ -153,6 +162,9 @@ func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) 
 
 func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) error {
 	if err := p.policy.ValidateOperation(compute.OperationResume); err != nil {
+		return err
+	}
+	if err := p.validateBinding(status); err != nil {
 		return err
 	}
 	id, err := machineID(status)
@@ -167,6 +179,9 @@ func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) e
 
 func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus) (compute.SandboxPostSnapshotState, *compute.ProviderSnapshot, error) {
 	if err := p.policy.ValidateOperation(compute.OperationSnapshot); err != nil {
+		return compute.SandboxPostSnapshotRunning, nil, err
+	}
+	if err := p.validateBinding(status); err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
 	}
 	id, err := machineID(status)
@@ -222,6 +237,9 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
 	id, err := machineID(status)
 	if err != nil {
+		return nil, err
+	}
+	if err := p.validateBoundResource(ctx, status); err != nil {
 		return nil, err
 	}
 	var result struct {
@@ -281,7 +299,58 @@ func (p *provider) adopt(ctx context.Context, name, queue, op, past string, crea
 		}
 		return nil, err
 	}
-	return &compute.ProviderStatus{InstanceID: created.ID}, nil
+	status := &compute.ProviderStatus{InstanceID: created.ID}
+	if p.policy.Lifecycle == compute.LifecycleFresh {
+		status.ResourceBinding = &compute.ResourceBinding{
+			ProviderType: providerType, TaskQueueName: queue, InstanceID: created.ID,
+			ConfigurationDigest: p.configurationLabel(queue),
+		}
+	}
+	return status, nil
+}
+
+// validateBinding detects missing context and configuration loss before any effect.
+func (p *provider) validateBinding(status *compute.ProviderStatus) error {
+	if err := compute.ValidateResourceBinding(compute.ProviderDetails{Type: providerType}, status); err != nil {
+		return err
+	}
+	if status == nil || status.ResourceBinding == nil {
+		if p.policy.Lifecycle == compute.LifecycleFresh {
+			return fmt.Errorf("smol-cloud: fresh resource binding is required")
+		}
+		return nil
+	}
+	binding := status.ResourceBinding
+	if p.policy.Lifecycle != compute.LifecycleFresh || binding.ConfigurationDigest != p.configurationLabel(binding.TaskQueueName) {
+		return fmt.Errorf("smol-cloud: resource binding conflicts with selected configuration")
+	}
+	return nil
+}
+
+// validateBoundResource checks current ownership before commands and deletion.
+// A matching label is reconciliation evidence, not authentication of a caller.
+func (p *provider) validateBoundResource(ctx context.Context, status *compute.ProviderStatus) error {
+	if err := p.validateBinding(status); err != nil {
+		return err
+	}
+	if status == nil || status.ResourceBinding == nil {
+		return nil
+	}
+	var machine struct {
+		ID      string            `json:"id"`
+		Name    string            `json:"name"`
+		Labels  map[string]string `json:"labels"`
+		Network networkPolicy     `json:"network"`
+	}
+	if err := p.request(ctx, http.MethodGet, machinePath(status.InstanceID), nil, &machine); err != nil {
+		return err
+	}
+	binding := status.ResourceBinding
+	name, _ := machineName(binding.TaskQueueName, "")
+	if machine.ID != status.InstanceID || machine.Name != name || machine.Labels["temporal-harness"] != "smol-cloud" || machine.Labels["temporal-harness-config"] != binding.ConfigurationDigest || !p.sameNetwork(machine.Network) {
+		return fmt.Errorf("smol-cloud: resource binding conflicts with current machine metadata")
+	}
+	return nil
 }
 
 // An activity retry can encounter the VM started by its previous attempt.
