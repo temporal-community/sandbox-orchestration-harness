@@ -3,13 +3,17 @@ package smolcloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	controller "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
 )
 
 func boundStatus(p *provider) *compute.ProviderStatus {
@@ -76,6 +80,9 @@ func TestBoundProviderCommandAndStopMetadata(t *testing.T) {
 				if (err == nil) != wantSuccess {
 					t.Fatalf("result: %v", err)
 				}
+				if errors.Is(err, compute.ErrInvalidResourceBinding) {
+					t.Fatalf("remote metadata refusal classified as local binding failure: %v", err)
+				}
 				want := []string{"GET /v1/machines/owned"}
 				if conflict == "none" {
 					if operation == "command" {
@@ -99,13 +106,15 @@ func TestBoundProviderRefusesLostOrConflictingContextBeforeHTTP(t *testing.T) {
 		t.Errorf("unexpected HTTP: %s %s", r.Method, r.URL)
 	})
 	p := newTestProvider(t, freshConfig()).(*provider)
-	for _, change := range []string{"nil-status", "missing-binding", "provider", "instance", "queue", "digest", "incomplete", "lost-config", "changed-lifecycle-and-digest", "changed-image", "changed-bootstrap", "changed-resources", "changed-network"} {
+	for _, change := range []string{"nil-status", "empty-id", "missing-binding", "provider", "instance", "queue", "digest", "incomplete", "lost-config", "changed-lifecycle-and-digest", "changed-image", "changed-bootstrap", "changed-resources", "changed-network"} {
 		t.Run(change, func(t *testing.T) {
 			status := boundStatus(p)
 			config := maps.Clone(freshConfig())
 			switch change {
 			case "nil-status":
 				status = nil
+			case "empty-id":
+				status.InstanceID = ""
 			case "missing-binding":
 				status.ResourceBinding = nil
 			case "provider":
@@ -135,25 +144,266 @@ func TestBoundProviderRefusesLostOrConflictingContextBeforeHTTP(t *testing.T) {
 			if change == "changed-lifecycle-and-digest" {
 				status.ResourceBinding.ConfigurationDigest = selected.(*provider).configurationLabel("queue")
 			}
-			if _, err := selected.ExecuteCommand(context.Background(), status, "true"); err == nil {
-				t.Fatal("command accepted conflicting context")
+			for _, invoke := range []func() error{
+				func() error { _, err := selected.ExecuteCommand(context.Background(), status, "true"); return err },
+				func() error { return selected.Stop(context.Background(), status) },
+			} {
+				err := invoke()
+				wantTagged := change != "lost-config" && change != "changed-lifecycle-and-digest"
+				if err == nil || errors.Is(fmt.Errorf("outer: %w", err), compute.ErrInvalidResourceBinding) != wantTagged {
+					t.Fatalf("local refusal identity: %v, want tagged=%t", err, wantTagged)
+				}
+				if (change == "nil-status" || change == "empty-id") && !strings.Contains(err.Error(), "machine id is required") {
+					t.Fatalf("machine ID must fail first: %v", err)
+				}
 			}
-			if err := selected.Stop(context.Background(), status); err == nil {
-				t.Fatal("stop accepted conflicting context")
-			}
-			if err := selected.Suspend(context.Background(), status); err == nil {
-				t.Fatal("suspend accepted conflicting context")
-			}
-			if err := selected.Resume(context.Background(), status); err == nil {
-				t.Fatal("resume accepted conflicting context")
-			}
-			if _, _, err := selected.Snapshot(context.Background(), status); err == nil {
-				t.Fatal("snapshot accepted conflicting context")
+			for _, invoke := range []func() error{
+				func() error { return selected.Suspend(context.Background(), status) },
+				func() error { return selected.Resume(context.Background(), status) },
+				func() error { _, _, err := selected.Snapshot(context.Background(), status); return err },
+			} {
+				err := invoke()
+				if err == nil || (selected.(*provider).policy.Lifecycle == compute.LifecycleFresh && !errors.Is(err, errors.ErrUnsupported)) {
+					t.Fatalf("fresh unsupported operation must fail before binding: %v", err)
+				}
 			}
 		})
 	}
 	if calls != 0 {
 		t.Fatalf("conflicts reached HTTP: %d", calls)
+	}
+}
+
+func TestBoundActivityRemoteRetryEligibility(t *testing.T) {
+	for _, operation := range []string{"command", "stop"} {
+		for _, failure := range []string{"none", "metadata", "get-429", "get-503", "get-decode", "effect-429", "effect-503", "absent", "delete-absent", "canceled"} {
+			if operation == "command" && failure == "delete-absent" {
+				continue
+			}
+			t.Run(operation+"/"+failure, func(t *testing.T) {
+				var p *provider
+				var requests []string
+				fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+					requests = append(requests, r.Method)
+					if r.Method == http.MethodGet {
+						switch failure {
+						case "get-429":
+							w.WriteHeader(http.StatusTooManyRequests)
+							return
+						case "get-503":
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
+						case "absent":
+							w.WriteHeader(http.StatusNotFound)
+							return
+						case "get-decode":
+							_, _ = w.Write([]byte("invalid-json"))
+							return
+						}
+						name, _ := machineName("queue", "")
+						if failure == "metadata" {
+							name = "other"
+						}
+						_ = json.NewEncoder(w).Encode(machineDetails{
+							ID:      "owned",
+							Name:    name,
+							Labels:  map[string]string{"temporal-harness": "smol-cloud", "temporal-harness-config": p.configurationLabel("queue")},
+							Network: p.networkPolicy(),
+						})
+						return
+					}
+					switch failure {
+					case "effect-429":
+						w.WriteHeader(http.StatusTooManyRequests)
+					case "effect-503":
+						w.WriteHeader(http.StatusServiceUnavailable)
+					case "delete-absent":
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						if operation == "command" {
+							_, _ = w.Write([]byte(`{"stdout":"ok","exitCode":0}`))
+						} else {
+							w.WriteHeader(http.StatusNoContent)
+						}
+					}
+				})
+				p = newTestProvider(t, freshConfig()).(*provider)
+				details := compute.ProviderDetails{Type: providerType, Config: freshConfig()}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if failure == "canceled" {
+					cancel()
+				}
+				var err error
+				if operation == "command" {
+					_, err = controller.ExecuteCommand(ctx, controller.ExecuteCommandInput{Provider: details, Status: boundStatus(p), Command: "true"})
+				} else {
+					err = controller.StopSandbox(ctx, controller.StopSandboxInput{Provider: details, Status: boundStatus(p)})
+				}
+				wantSuccess := failure == "none" || (operation == "stop" && (failure == "absent" || failure == "delete-absent"))
+				var app *temporal.ApplicationError
+				if (err == nil) != wantSuccess || errors.Is(err, compute.ErrInvalidResourceBinding) || errors.As(err, &app) {
+					t.Fatalf("remote result lost retry eligibility: %v", err)
+				}
+				want := []string{http.MethodGet}
+				if failure == "none" || strings.HasPrefix(failure, "effect-") || failure == "delete-absent" {
+					method := http.MethodPost
+					if operation == "stop" {
+						method = http.MethodDelete
+					}
+					want = append(want, method)
+				}
+				if failure == "canceled" {
+					want = nil
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("cancellation identity: %v", err)
+					}
+				}
+				if !reflect.DeepEqual(requests, want) {
+					t.Fatalf("requests=%v, want %v", requests, want)
+				}
+			})
+		}
+	}
+}
+
+func TestBoundActivityLocalErrorClassification(t *testing.T) {
+	requests := 0
+	fakeEndpoint(t, func(http.ResponseWriter, *http.Request) { requests++; t.Error("local refusal reached HTTP") })
+	p := newTestProvider(t, freshConfig()).(*provider)
+	for _, fresh := range []bool{false, true} {
+		for _, change := range []string{"nil-status", "empty-id", "missing-binding", "digest"} {
+			// Legacy provider tests cover valid unbound standard status.
+			if !fresh && change == "missing-binding" {
+				continue
+			}
+			t.Run(fmt.Sprintf("fresh=%t/%s", fresh, change), func(t *testing.T) {
+				config := maps.Clone(freshConfig())
+				if !fresh {
+					config[ConfigKeyLifecycle] = "standard"
+				}
+				status := boundStatus(p)
+				switch change {
+				case "nil-status":
+					status = nil
+				case "empty-id":
+					status = &compute.ProviderStatus{}
+				case "missing-binding":
+					status.ResourceBinding = nil
+				case "digest":
+					status.ResourceBinding.ConfigurationDigest = "other"
+				}
+				details := compute.ProviderDetails{Type: providerType, Config: config}
+				for _, invoke := range []func() error{
+					func() error {
+						return controller.StopSandbox(context.Background(), controller.StopSandboxInput{Provider: details, Status: status})
+					},
+					func() error {
+						_, err := controller.ExecuteCommand(context.Background(), controller.ExecuteCommandInput{Provider: details, Status: status})
+						return err
+					},
+				} {
+					err := invoke()
+					var app *temporal.ApplicationError
+					if err == nil || errors.Is(err, compute.ErrInvalidResourceBinding) != fresh {
+						t.Fatalf("local classification: %v", err)
+					}
+					if fresh {
+						if !errors.As(err, &app) || !app.NonRetryable() || app.Type() != "ProviderConfigError" || !errors.Is(app.Unwrap(), compute.ErrInvalidResourceBinding) {
+							t.Fatalf("fresh Activity classification: %v", err)
+						}
+					} else if errors.As(err, &app) {
+						t.Fatalf("standard refusal lost retry eligibility: %v", err)
+					}
+				}
+			})
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("local refusals made %d requests", requests)
+	}
+}
+
+type bindingTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f bindingTransportFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestBoundProviderTransportError(t *testing.T) {
+	fakeEndpoint(t, func(http.ResponseWriter, *http.Request) { t.Error("custom transport reached HTTP") })
+	p := newTestProvider(t, freshConfig()).(*provider)
+	transportErr := errors.New("transport unavailable")
+	requests := 0
+	p.client.Transport = bindingTransportFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, transportErr
+	})
+	for _, invoke := range []func() error{
+		func() error { return p.Stop(context.Background(), boundStatus(p)) },
+		func() error { _, err := p.ExecuteCommand(context.Background(), boundStatus(p), "true"); return err },
+	} {
+		err := invoke()
+		if !errors.Is(err, transportErr) || errors.Is(err, compute.ErrInvalidResourceBinding) {
+			t.Fatalf("transport identity or retry eligibility changed: %v", err)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("transport requests=%d, want 2", requests)
+	}
+}
+
+func TestBoundActivityConstructorErrorPrecedence(t *testing.T) {
+	for _, failure := range []string{"image", "url", "credential"} {
+		t.Run(failure, func(t *testing.T) {
+			requests := 0
+			fakeEndpoint(t, func(http.ResponseWriter, *http.Request) { requests++; t.Error("constructor refusal reached HTTP") })
+			config := maps.Clone(freshConfig())
+			want := ""
+			switch failure {
+			case "image":
+				delete(config, "image")
+				want = "image"
+			case "url":
+				t.Setenv("SMOL_CLOUD_URL", "://invalid")
+				want = "invalid SMOL_CLOUD_URL"
+			case "credential":
+				t.Setenv("SMOL_CLOUD_TOKEN", "")
+				want = "set SMOL_CLOUD_TOKEN"
+			}
+			details := compute.ProviderDetails{Type: providerType, Config: config}
+			for _, malformed := range []bool{false, true} {
+				status := &compute.ProviderStatus{InstanceID: "owned"}
+				if malformed {
+					status.ResourceBinding = &compute.ResourceBinding{}
+				}
+				for _, invoke := range []func() error{
+					func() error {
+						return controller.StopSandbox(context.Background(), controller.StopSandboxInput{Provider: details, Status: status})
+					},
+					func() error {
+						_, err := controller.ExecuteCommand(context.Background(), controller.ExecuteCommandInput{Provider: details, Status: status})
+						return err
+					},
+				} {
+					err := invoke()
+					var app *temporal.ApplicationError
+					if !errors.As(err, &app) || app.Type() != "ProviderConfigError" || !app.NonRetryable() {
+						t.Fatalf("constructor classification: %v", err)
+					}
+					if malformed {
+						if !errors.Is(err, compute.ErrInvalidResourceBinding) || !strings.Contains(err.Error(), "incomplete resource binding") {
+							t.Fatalf("supplied binding must fail before constructor: %v", err)
+						}
+					} else if errors.Is(err, compute.ErrInvalidResourceBinding) || !strings.Contains(err.Error(), want) {
+						t.Fatalf("constructor must fail before missing binding: %v, want %s", err, want)
+					}
+				}
+			}
+			if requests != 0 {
+				t.Fatalf("constructor failures made %d requests", requests)
+			}
+		})
 	}
 }
 

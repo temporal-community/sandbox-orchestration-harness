@@ -3,6 +3,7 @@ package compute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -10,6 +11,10 @@ import (
 // NoIdleTimeout is a sentinel value for IdleTimeout meaning the sandbox will
 // never be automatically suspended due to inactivity.
 const NoIdleTimeout time.Duration = -1
+
+// ErrInvalidResourceBinding identifies invalid supplied resource context or
+// missing or conflicting status or selected configuration required by a fresh resource.
+var ErrInvalidResourceBinding = errors.New("invalid resource binding")
 
 // SandboxPostSnapshotState describes the sandbox's state after Snapshot returns.
 type SandboxPostSnapshotState int
@@ -41,7 +46,10 @@ type (
 		ResourceBinding *ResourceBinding `json:"resource_binding,omitempty"`
 	}
 	// ResourceBinding carries nonsecret reconciliation context for a fresh resource.
-	// It detects conflicting inputs in a trusted environment; it is not authentication.
+	// The queue lets the provider reconstruct its expected name and configuration
+	// digest. Provider and instance identities detect conflicting status inputs.
+	// Retain the complete binding for later calls. It is optional for providers that
+	// do not require it and supplies no caller authentication.
 	ResourceBinding struct {
 		ProviderType        ProviderType `json:"provider_type"`
 		TaskQueueName       string       `json:"task_queue_name"`
@@ -105,18 +113,11 @@ func ValidateResourceBinding(details ProviderDetails, status *ProviderStatus) er
 	if status != nil && status.ResourceBinding != nil {
 		binding := status.ResourceBinding
 		if binding.ProviderType == "" || binding.TaskQueueName == "" || binding.InstanceID == "" || binding.ConfigurationDigest == "" {
-			return fmt.Errorf("compute: incomplete resource binding")
+			return fmt.Errorf("compute: incomplete resource binding: %w", ErrInvalidResourceBinding)
 		}
 		if binding.ProviderType != details.Type || binding.InstanceID != status.InstanceID {
-			return fmt.Errorf("compute: resource binding conflicts with provider or instance")
+			return fmt.Errorf("compute: resource binding conflicts with provider or instance: %w", ErrInvalidResourceBinding)
 		}
-	}
-	policy, err := ResolvePolicy(details)
-	if err != nil {
-		return err
-	}
-	if details.Type == ProviderTypeSmolCloud && policy.Lifecycle == LifecycleFresh && (status == nil || status.ResourceBinding == nil) {
-		return fmt.Errorf("compute: fresh resource binding is required")
 	}
 	return nil
 }

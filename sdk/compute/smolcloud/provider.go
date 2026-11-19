@@ -129,7 +129,7 @@ func (p *provider) Start(ctx context.Context, taskQueueName string) (*compute.Pr
 }
 
 func (p *provider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
-	id, err := machineID(status)
+	id, err := p.machineID(status)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (p *provider) Suspend(ctx context.Context, status *compute.ProviderStatus) 
 	if err := p.validateBinding(status); err != nil {
 		return err
 	}
-	id, err := machineID(status)
+	id, err := p.machineID(status)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (p *provider) Resume(ctx context.Context, status *compute.ProviderStatus) e
 	if err := p.validateBinding(status); err != nil {
 		return err
 	}
-	id, err := machineID(status)
+	id, err := p.machineID(status)
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func (p *provider) Snapshot(ctx context.Context, status *compute.ProviderStatus)
 	if err := p.validateBinding(status); err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
 	}
-	id, err := machineID(status)
+	id, err := p.machineID(status)
 	if err != nil {
 		return compute.SandboxPostSnapshotRunning, nil, err
 	}
@@ -235,7 +235,7 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 }
 
 func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
-	id, err := machineID(status)
+	id, err := p.machineID(status)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,9 @@ func (p *provider) adopt(ctx context.Context, name, queue, op, past string, crea
 	status := &compute.ProviderStatus{InstanceID: created.ID}
 	if p.policy.Lifecycle == compute.LifecycleFresh {
 		status.ResourceBinding = &compute.ResourceBinding{
-			ProviderType: providerType, TaskQueueName: queue, InstanceID: created.ID,
+			ProviderType:        providerType,
+			TaskQueueName:       queue,
+			InstanceID:          created.ID,
 			ConfigurationDigest: p.configurationLabel(queue),
 		}
 	}
@@ -316,13 +318,16 @@ func (p *provider) validateBinding(status *compute.ProviderStatus) error {
 	}
 	if status == nil || status.ResourceBinding == nil {
 		if p.policy.Lifecycle == compute.LifecycleFresh {
-			return fmt.Errorf("smol-cloud: fresh resource binding is required")
+			return fmt.Errorf("smol-cloud: fresh resource binding is required: %w", compute.ErrInvalidResourceBinding)
 		}
 		return nil
 	}
 	binding := status.ResourceBinding
-	if p.policy.Lifecycle != compute.LifecycleFresh || binding.ConfigurationDigest != p.configurationLabel(binding.TaskQueueName) {
+	if p.policy.Lifecycle != compute.LifecycleFresh {
 		return fmt.Errorf("smol-cloud: resource binding conflicts with selected configuration")
+	}
+	if binding.ConfigurationDigest != p.configurationLabel(binding.TaskQueueName) {
+		return fmt.Errorf("smol-cloud: resource binding conflicts with selected configuration: %w", compute.ErrInvalidResourceBinding)
 	}
 	return nil
 }
@@ -336,12 +341,7 @@ func (p *provider) validateBoundResource(ctx context.Context, status *compute.Pr
 	if status == nil || status.ResourceBinding == nil {
 		return nil
 	}
-	var machine struct {
-		ID      string            `json:"id"`
-		Name    string            `json:"name"`
-		Labels  map[string]string `json:"labels"`
-		Network networkPolicy     `json:"network"`
-	}
+	var machine machineDetails
 	if err := p.request(ctx, http.MethodGet, machinePath(status.InstanceID), nil, &machine); err != nil {
 		return err
 	}
@@ -536,8 +536,11 @@ func isStatus(err error, status int) bool {
 	return errors.As(err, &e) && e.status == status
 }
 func machinePath(id string) string { return "/v1/machines/" + url.PathEscape(id) }
-func machineID(status *compute.ProviderStatus) (string, error) {
+func (p *provider) machineID(status *compute.ProviderStatus) (string, error) {
 	if status == nil || status.InstanceID == "" {
+		if p.policy.Lifecycle == compute.LifecycleFresh {
+			return "", fmt.Errorf("smol-cloud: machine id is required: %w", compute.ErrInvalidResourceBinding)
+		}
 		return "", fmt.Errorf("smol-cloud: machine id is required")
 	}
 	return status.InstanceID, nil

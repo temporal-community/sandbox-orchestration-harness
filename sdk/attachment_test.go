@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -145,8 +146,11 @@ func TestLocalPendingStartCancellationCleanup(t *testing.T) {
 			}
 			releaseOnce.Do(func() { close(release) })
 			updateErr := update.Get(ctx, nil)
-			if fail && updateErr == nil {
-				t.Fatal("failed allocation update succeeded")
+			if fail && (updateErr == nil || !strings.Contains(updateErr.Error(), "allocation refused")) {
+				t.Fatal("failed allocation update lost its original error:", updateErr)
+			}
+			if !fail && updateErr != nil {
+				t.Fatal("successful late allocation update failed:", updateErr)
 			}
 			if err := run.Get(ctx, nil); (scenario.cancel && !temporal.IsCanceledError(err)) || (!scenario.cancel && err != nil) {
 				t.Fatalf("pending start terminal result: %v", err)

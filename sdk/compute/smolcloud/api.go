@@ -26,6 +26,13 @@ type createdMachine struct {
 	Network networkPolicy `json:"network"`
 }
 
+type machineDetails struct {
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Labels  map[string]string `json:"labels"`
+	Network networkPolicy     `json:"network"`
+}
+
 type networkPolicy struct {
 	Mode  string   `json:"mode"`
 	CIDRs []string `json:"cidrs,omitempty"`

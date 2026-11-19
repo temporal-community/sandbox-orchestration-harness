@@ -57,7 +57,7 @@ func TestReceivingBindingConflictBeforeConstruction(t *testing.T) {
 				},
 			} {
 				var appErr *temporal.ApplicationError
-				if err := invoke(); !errors.As(err, &appErr) || appErr.Type() != "ProviderConfigError" || !appErr.NonRetryable() {
+				if err := invoke(); !errors.As(err, &appErr) || appErr.Type() != "ProviderConfigError" || !appErr.NonRetryable() || !errors.Is(appErr.Unwrap(), compute.ErrInvalidResourceBinding) {
 					t.Fatalf("binding refusal: %v", err)
 				}
 			}
@@ -69,6 +69,15 @@ func TestReceivingBindingConflictBeforeConstruction(t *testing.T) {
 	// A provider without a policy resolver still receives its legacy status.
 	if err := StopSandbox(context.Background(), StopSandboxInput{Provider: details, Status: &compute.ProviderStatus{InstanceID: "legacy"}}); err != nil || constructions.Load() != 1 || methods.Load() != 1 {
 		t.Fatalf("legacy dispatch: err=%v constructions=%d methods=%d", err, constructions.Load(), methods.Load())
+	}
+	compute.RegisterPolicy(typ, func(map[string]string) (compute.ExecutionPolicy, error) {
+		return compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}, nil
+	})
+	for _, status := range []*compute.ProviderStatus{nil, {InstanceID: "unrelated-fresh"}} {
+		before := constructions.Load()
+		if err := StopSandbox(context.Background(), StopSandboxInput{Provider: details, Status: status}); err != nil || constructions.Load() != before+1 || methods.Load() != before+1 {
+			t.Fatalf("unrelated fresh dispatch: err=%v constructions=%d methods=%d", err, constructions.Load(), methods.Load())
+		}
 	}
 }
 

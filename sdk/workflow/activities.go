@@ -8,9 +8,12 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
-func wrapUnsupported(err error) error {
+func wrapProviderError(err error) error {
 	if errors.Is(err, errors.ErrUnsupported) {
 		return temporal.NewNonRetryableApplicationError(err.Error(), errUnsupportedType, err)
+	}
+	if errors.Is(err, compute.ErrInvalidResourceBinding) {
+		return wrapProviderConfig(err)
 	}
 	return err
 }
@@ -19,16 +22,16 @@ func wrapProviderConfig(err error) error {
 	return temporal.NewNonRetryableApplicationError(err.Error(), "ProviderConfigError", err)
 }
 
-// lookupProvider checks configuration policy before constructing the provider.
+// validateAndLookupProvider checks policy and supplied resource context before construction.
 // Activities are registered entry points that other Workflows and retries can call
 // directly, so they enforce the policy independently of the controller.
-func lookupProvider(details compute.ProviderDetails, operation compute.Operation, statuses ...*compute.ProviderStatus) (compute.Provider, error) {
+func validateAndLookupProvider(details compute.ProviderDetails, operation compute.Operation, statuses ...*compute.ProviderStatus) (compute.Provider, error) {
 	policy, err := compute.ResolvePolicy(details)
 	if err != nil {
 		return nil, wrapProviderConfig(err)
 	}
 	if err := policy.ValidateOperation(operation); err != nil {
-		return nil, wrapUnsupported(err)
+		return nil, wrapProviderError(err)
 	}
 	for _, status := range statuses {
 		if err := compute.ValidateResourceBinding(details, status); err != nil {
@@ -63,17 +66,17 @@ func StartSandbox(ctx context.Context, input StartSandboxInput) (StartSandboxOut
 	}
 	status, err := provider.Start(ctx, input.TaskQueueName)
 	if err != nil {
-		return StartSandboxOutput{}, wrapUnsupported(err)
+		return StartSandboxOutput{}, wrapProviderError(err)
 	}
 	return StartSandboxOutput{Status: status}, nil
 }
 
 func StopSandbox(ctx context.Context, input StopSandboxInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationStop, input.Status)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationStop, input.Status)
 	if err != nil {
 		return err
 	}
-	return wrapUnsupported(provider.Stop(ctx, input.Status))
+	return wrapProviderError(provider.Stop(ctx, input.Status))
 }
 
 type SuspendSandboxInput struct {
@@ -82,11 +85,11 @@ type SuspendSandboxInput struct {
 }
 
 func SuspendSandbox(ctx context.Context, input SuspendSandboxInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationSuspend, input.Status)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationSuspend, input.Status)
 	if err != nil {
 		return err
 	}
-	return wrapUnsupported(provider.Suspend(ctx, input.Status))
+	return wrapProviderError(provider.Suspend(ctx, input.Status))
 }
 
 type ResumeSandboxInput struct {
@@ -95,11 +98,11 @@ type ResumeSandboxInput struct {
 }
 
 func ResumeSandbox(ctx context.Context, input ResumeSandboxInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationResume, input.Status)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationResume, input.Status)
 	if err != nil {
 		return err
 	}
-	return wrapUnsupported(provider.Resume(ctx, input.Status))
+	return wrapProviderError(provider.Resume(ctx, input.Status))
 }
 
 type ExecuteCommandInput struct {
@@ -113,13 +116,13 @@ type ExecuteCommandOutput struct {
 }
 
 func ExecuteCommand(ctx context.Context, input ExecuteCommandInput) (ExecuteCommandOutput, error) {
-	provider, err := lookupProvider(input.Provider, compute.OperationCommand, input.Status)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationCommand, input.Status)
 	if err != nil {
 		return ExecuteCommandOutput{}, err
 	}
 	result, err := provider.ExecuteCommand(ctx, input.Status, input.Command)
 	if err != nil {
-		return ExecuteCommandOutput{}, wrapUnsupported(err)
+		return ExecuteCommandOutput{}, wrapProviderError(err)
 	}
 	return ExecuteCommandOutput{Result: result}, nil
 }
@@ -135,13 +138,13 @@ type SnapshotSandboxOutput struct {
 }
 
 func SnapshotSandbox(ctx context.Context, input SnapshotSandboxInput) (SnapshotSandboxOutput, error) {
-	provider, err := lookupProvider(input.Provider, compute.OperationSnapshot, input.Status)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationSnapshot, input.Status)
 	if err != nil {
 		return SnapshotSandboxOutput{}, err
 	}
 	state, snapshot, err := provider.Snapshot(ctx, input.Status)
 	if err != nil {
-		return SnapshotSandboxOutput{}, wrapUnsupported(err)
+		return SnapshotSandboxOutput{}, wrapProviderError(err)
 	}
 	return SnapshotSandboxOutput{SandboxState: state, Snapshot: snapshot}, nil
 }
@@ -157,13 +160,13 @@ type StartSandboxFromSnapshotOutput struct {
 }
 
 func StartSandboxFromSnapshot(ctx context.Context, input StartSandboxFromSnapshotInput) (StartSandboxFromSnapshotOutput, error) {
-	provider, err := lookupProvider(input.Provider, compute.OperationRestore)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationRestore)
 	if err != nil {
 		return StartSandboxFromSnapshotOutput{}, err
 	}
 	status, err := provider.StartFromSnapshot(ctx, input.TaskQueueName, input.Snapshot)
 	if err != nil {
-		return StartSandboxFromSnapshotOutput{}, wrapUnsupported(err)
+		return StartSandboxFromSnapshotOutput{}, wrapProviderError(err)
 	}
 	return StartSandboxFromSnapshotOutput{Status: status}, nil
 }
@@ -174,9 +177,9 @@ type DeleteSnapshotInput struct {
 }
 
 func DeleteSnapshot(ctx context.Context, input DeleteSnapshotInput) error {
-	provider, err := lookupProvider(input.Provider, compute.OperationDeleteSnapshot)
+	provider, err := validateAndLookupProvider(input.Provider, compute.OperationDeleteSnapshot)
 	if err != nil {
 		return err
 	}
-	return wrapUnsupported(provider.DeleteSnapshot(ctx, input.Snapshot))
+	return wrapProviderError(provider.DeleteSnapshot(ctx, input.Snapshot))
 }

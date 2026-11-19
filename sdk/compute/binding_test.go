@@ -1,6 +1,8 @@
 package compute_test
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,7 +12,7 @@ import (
 
 // Matching zero identities must fail completeness before equality can accept them.
 func TestResourceBindingLocalContract(t *testing.T) {
-	for _, name := range []string{"matching-empty-provider", "matching-empty-instance", "fresh-nil-status", "fresh-unbound-status", "fresh-bound", "legacy-unbound"} {
+	for _, name := range []string{"matching-empty-provider", "matching-empty-instance", "provider-conflict", "instance-conflict", "fresh-nil-status", "fresh-unbound-status", "fresh-bound", "legacy-unbound"} {
 		t.Run(name, func(t *testing.T) {
 			details := compute.ProviderDetails{Type: compute.ProviderTypeSmolCloud, Config: map[string]string{"lifecycle": "fresh"}}
 			status := &compute.ProviderStatus{InstanceID: "resource", ResourceBinding: &compute.ResourceBinding{
@@ -26,10 +28,14 @@ func TestResourceBindingLocalContract(t *testing.T) {
 				want = "incomplete resource binding"
 			case "fresh-nil-status":
 				status = nil
-				want = "fresh resource binding is required"
 			case "fresh-unbound-status":
 				status.ResourceBinding = nil
-				want = "fresh resource binding is required"
+			case "provider-conflict":
+				status.ResourceBinding.ProviderType = compute.ProviderTypeDaytona
+				want = "conflicts with provider or instance"
+			case "instance-conflict":
+				status.InstanceID = "other"
+				want = "conflicts with provider or instance"
 			case "legacy-unbound":
 				details.Config = nil
 				status.ResourceBinding = nil
@@ -41,6 +47,8 @@ func TestResourceBindingLocalContract(t *testing.T) {
 				}
 			} else if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("binding validation: %v, want %q", err, want)
+			} else if !errors.Is(fmt.Errorf("outer: %w", err), compute.ErrInvalidResourceBinding) {
+				t.Fatalf("binding error lost identity: %v", err)
 			}
 		})
 	}
