@@ -12,6 +12,8 @@ import (
 
 type sandboxLifecycle int
 
+const exclusiveInitChange = "exclusive-sandbox-initialization"
+
 const (
 	sandboxPending   sandboxLifecycle = iota // before init update is processed
 	sandboxRunning                           // initialized, not suspended
@@ -23,6 +25,8 @@ const (
 type sandboxWorkflow struct {
 	state           SandboxLocalState
 	policy          compute.ExecutionPolicy
+	exclusiveInit   bool
+	initMutex       workflow.Mutex
 	lifecycle       sandboxLifecycle
 	cancelRequested bool
 	ordinaryStart   bool   // selects Start result settling; snapshot initialization keeps its own lifetime
@@ -48,6 +52,8 @@ func SandboxWorkflow(ctx workflow.Context, input SandboxLocalState) error {
 
 func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 	logger := workflow.GetLogger(ctx)
+	s.exclusiveInit = workflow.GetVersion(ctx, exclusiveInitChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	s.initMutex = workflow.NewMutex(ctx)
 
 	if err := workflow.SetQueryHandler(ctx, SandboxStateQuery, s.handleStateQuery); err != nil {
 		return err
@@ -180,6 +186,9 @@ func (s *sandboxWorkflow) validateInit(inp SandboxInitInput) error {
 	if s.lifecycle != sandboxPending {
 		return temporal.NewApplicationError("sandbox already initialized", "AlreadyInitialized")
 	}
+	if s.exclusiveInit && s.initMutex.IsLocked() {
+		return temporal.NewApplicationError("sandbox initialization in progress", "AlreadyInitialized")
+	}
 	if !compute.IsRegistered(inp.ComputeProvider.Type) {
 		return temporal.NewApplicationError("Unknown compute provider type", "InvalidArgument")
 	}
@@ -191,6 +200,15 @@ func (s *sandboxWorkflow) validateInit(inp SandboxInitInput) error {
 }
 
 func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput) error {
+	if s.exclusiveInit {
+		if s.lifecycle != sandboxPending {
+			return temporal.NewApplicationError("sandbox already initialized", "AlreadyInitialized")
+		}
+		if !s.initMutex.TryLock(ctx) {
+			return temporal.NewApplicationError("sandbox initialization in progress", "AlreadyInitialized")
+		}
+		defer s.initMutex.Unlock()
+	}
 	policy, err := compute.ResolvePolicy(inp.ComputeProvider)
 	if err != nil {
 		return wrapProviderConfig(err)
