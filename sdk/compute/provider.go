@@ -80,6 +80,8 @@ type (
 
 const (
 	ProviderTypeAgentCoreRuntime ProviderType = "aws-agentcore-runtime"
+	ProviderTypeBaseten          ProviderType = "baseten"
+	ProviderTypeBlaxel           ProviderType = "blaxel"
 	ProviderTypeCrafting         ProviderType = "crafting"
 	ProviderTypeDaytona          ProviderType = "daytona"
 	ProviderTypeE2B              ProviderType = "e2b"
