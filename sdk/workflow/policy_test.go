@@ -90,6 +90,39 @@ func TestControllerInitialPolicyAdmission(t *testing.T) {
 	}
 }
 
+func TestControllerInitializationClaimGuardsReceivingHandler(t *testing.T) {
+	provider, calls := registerTestPolicy(t)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) error {
+		s := &sandboxWorkflow{exclusiveInit: true, initMutex: temporalworkflow.NewMutex(ctx), policy: compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}}
+		if !s.initMutex.TryLock(ctx) {
+			return errors.New("initial claim failed")
+		}
+		for _, lifecycle := range []string{"fresh", "", "invalid"} {
+			input := SandboxInitInput{ComputeProvider: compute.ProviderDetails{Type: provider.Type, Config: map[string]string{"lifecycle": lifecycle}}, IdleTimeout: compute.NoIdleTimeout}
+			for _, err := range []error{s.validateInit(input), s.handleInit(ctx, input)} {
+				var app *temporal.ApplicationError
+				if !errors.As(err, &app) || app.Type() != "AlreadyInitialized" || !strings.Contains(err.Error(), "initialization in progress") {
+					return fmt.Errorf("competing initialization not refused: %v", err)
+				}
+			}
+			if s.policy.Lifecycle != compute.LifecycleFresh || s.state.ComputeProvider != nil || s.state.Status != nil || calls.Load() != 0 {
+				return errors.New("competing initialization changed the admitted request")
+			}
+		}
+		s.initMutex.Unlock()
+		s.lifecycle = sandboxRunning
+		if err := s.handleInit(ctx, SandboxInitInput{ComputeProvider: provider}); err == nil || !strings.Contains(err.Error(), "already initialized") {
+			return fmt.Errorf("completed initialization was replaced: %v", err)
+		}
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControllerRetainedPolicyGuards(t *testing.T) {
 	provider, _ := registerTestPolicy(t)
 	snapshot := &compute.ProviderSnapshot{SnapshotID: "snapshot"}
