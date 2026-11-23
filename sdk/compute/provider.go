@@ -3,7 +3,6 @@ package compute
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -115,23 +114,5 @@ func ValidateResourceBinding(details ProviderDetails, status *ProviderStatus) er
 			return fmt.Errorf("compute: resource binding conflicts with provider: %w", ErrInvalidResourceBinding)
 		}
 	}
-	return nil
-}
-
-// UnmarshalJSON refuses the unsupported nested status format instead of silently
-// discarding its reconciliation context. Plain legacy instance IDs remain valid.
-func (s *ProviderStatus) UnmarshalJSON(data []byte) error {
-	type statusFields ProviderStatus
-	var decoded struct {
-		statusFields
-		LegacyBinding json.RawMessage `json:"resource_binding"`
-	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	if decoded.LegacyBinding != nil {
-		return fmt.Errorf("compute: nested resource binding requires compatible Workers: %w", ErrInvalidResourceBinding)
-	}
-	*s = ProviderStatus(decoded.statusFields)
 	return nil
 }

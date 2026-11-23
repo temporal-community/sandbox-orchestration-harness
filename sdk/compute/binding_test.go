@@ -85,10 +85,4 @@ func TestProviderStatusWireAndCompleteness(t *testing.T) {
 			t.Fatalf("partial context %d accepted: %v", mask, err)
 		}
 	}
-	for _, wire := range []string{`{"instance_id":"old","resource_binding":{}}`, `{"instance_id":"old","resource_binding":null}`} {
-		var status compute.ProviderStatus
-		if err := json.Unmarshal([]byte(wire), &status); !errors.Is(err, compute.ErrInvalidResourceBinding) {
-			t.Fatalf("nested context discarded: %+v %v", status, err)
-		}
-	}
 }
