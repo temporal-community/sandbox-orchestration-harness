@@ -73,9 +73,9 @@ jobs:
 
           required = {
 
-              "TestLocalExternalProcessExample/completion",
-              "TestLocalExternalProcessExample/cancellation",
-              "TestLocalExternalProcessExample/unsupported-profile",
+              "TestLocalExternalProcessLifecycle/completion",
+              "TestLocalExternalProcessLifecycle/cancellation",
+              "TestLocalExternalProcessLifecycle/unsupported-profile",
               "TestLocalProcessWithoutWorkerHistory/default-idle",
               "TestLocalProcessWithoutWorkerHistory/no-idle-timeout",
               "TestLocalProcessWithoutWorkerHistory/fresh-policy",
