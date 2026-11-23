@@ -2,14 +2,19 @@
 
 A Go example for running shell commands inside ephemeral, isolated compute environments from Temporal workflows. Workflow developers create a sandbox, run commands in it, and let the SDK handle provisioning, suspend/resume, snapshot/fork, and teardown — all driven by a long-lived child workflow that manages the sandbox lifecycle.
 
+## v2 Development
+
+Version 2 of the Sandbox Orchestraion Harness is under active development on the main branch and may break compatibility with v1.
+For Version 1, please continue to use the [v1 branch](https://github.com/temporal-community/sandbox-orchestration-harness/tree/v1).
+
 ## Architecture
 
 The repository is a Go workspace with one library module and several example modules:
 
-| Module | Role |
-|--------|------|
-| `sdk/` | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
-| `examples/*/` | Runnable example workflows |
+| Module        | Role                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------- |
+| `sdk/`        | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
+| `examples/*/` | Runnable example workflows                                                                              |
 
 ### How it works
 
@@ -122,31 +127,31 @@ err := sandbox.Register(w, temporalClient)
 
 Nine providers are included. All implement `compute.Provider` and self-register via `init()`. Methods not supported by a provider return `errors.ErrUnsupported`.
 
-| Provider | Type constant | Blank-import |
-|----------|--------------|--------------|
-| Crafting | `compute.ProviderTypeCrafting` | `sdk/compute/crafting` |
-| Smol Machines Cloud | `compute.ProviderTypeSmolCloud` | `sdk/compute/smolcloud` |
-| E2B | `compute.ProviderTypeE2B` | `sdk/compute/e2b` |
-| Daytona | `compute.ProviderTypeDaytona` | `sdk/compute/daytona` |
-| AgentCore Runtime | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore` |
-| Modal | `compute.ProviderTypeModal` | `sdk/compute/modal` |
-| GKE Agent Sandbox | `compute.ProviderTypeGKEAgentSandbox` | `sdk/compute/gkeagentsandbox` |
-| Blaxel | `compute.ProviderTypeBlaxel` | `sdk/compute/blaxel` |
-| Baseten Sandboxes | `compute.ProviderTypeBaseten` | `sdk/compute/baseten` |
+| Provider            | Type constant                          | Blank-import                  |
+| ------------------- | -------------------------------------- | ----------------------------- |
+| Crafting            | `compute.ProviderTypeCrafting`         | `sdk/compute/crafting`        |
+| Smol Machines Cloud | `compute.ProviderTypeSmolCloud`        | `sdk/compute/smolcloud`       |
+| E2B                 | `compute.ProviderTypeE2B`              | `sdk/compute/e2b`             |
+| Daytona             | `compute.ProviderTypeDaytona`          | `sdk/compute/daytona`         |
+| AgentCore Runtime   | `compute.ProviderTypeAgentCoreRuntime` | `sdk/compute/agentcore`       |
+| Modal               | `compute.ProviderTypeModal`            | `sdk/compute/modal`           |
+| GKE Agent Sandbox   | `compute.ProviderTypeGKEAgentSandbox`  | `sdk/compute/gkeagentsandbox` |
+| Blaxel              | `compute.ProviderTypeBlaxel`           | `sdk/compute/blaxel`          |
+| Baseten Sandboxes   | `compute.ProviderTypeBaseten`          | `sdk/compute/baseten`         |
 
 ### Feature coverage
 
-| Provider | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
-|----------|:-----:|:----:|:-------:|:------:|:--------------:|:--------:|:-----------------:|
-| Crafting | ✓ | ✓ | ✓ | ✓ | ✓ | ✓‡ | ✓‡ |
-| Smol Machines Cloud | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| E2B | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
-| GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
-| Blaxel | ✓ | ✓ | ✓§ | ✓§ | ✓ | ✓¶ | ✓¶ |
-| Baseten Sandboxes | ✓ | ✓ | | | ✓ | | |
+| Provider            | Start | Stop | Suspend | Resume | ExecuteCommand | Snapshot | StartFromSnapshot |
+| ------------------- | :---: | :--: | :-----: | :----: | :------------: | :------: | :---------------: |
+| Crafting            |   ✓   |  ✓   |    ✓    |   ✓    |       ✓        |    ✓‡    |        ✓‡         |
+| Smol Machines Cloud |   ✓   |  ✓   |    ✓    |   ✓    |       ✓        |    ✓     |         ✓         |
+| E2B                 |   ✓   |  ✓   |    ✓    |   ✓    |       ✓        |    ✓     |         ✓         |
+| Daytona             |   ✓   |  ✓   |    ✓    |   ✓    |       ✓        |          |                   |
+| AgentCore Runtime   |   ✓   |  ✓   |    ✓    |   ✓    |       ✓        |          |                   |
+| Modal               |   ✓   |  ✓   |         |        |       ✓        |    ✓     |         ✓         |
+| GKE Agent Sandbox   |   ✓   |  ✓   |         |        |       ✓        |    ✓†    |        ✓†         |
+| Blaxel              |   ✓   |  ✓   |   ✓§    |   ✓§   |       ✓        |    ✓¶    |        ✓¶         |
+| Baseten Sandboxes   |   ✓   |  ✓   |         |        |       ✓        |          |                   |
 
 Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
 
@@ -196,11 +201,11 @@ not need a Temporal worker.
 
 Bootstrap, lifecycle policy and branchability have separate configuration keys:
 
-| Key | Values and defaults |
-|-----|---------------------|
-| `bootstrap` | `worker` (default) supplies `TEMPORAL_TASK_QUEUE`; `none` sends an empty guest environment. |
-| `lifecycle` | `standard` (default) retains existing operations; `fresh` permits commands and stop, requires `NoIdleTimeout`, and refuses suspend, resume, snapshots and restore. |
-| `branchable` | `true` by default; `false` disables checkpoint creation and restore. Fresh lifecycle defaults to `false` and rejects explicit `true`. |
+| Key          | Values and defaults                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bootstrap`  | `worker` (default) supplies `TEMPORAL_TASK_QUEUE`; `none` sends an empty guest environment.                                                                        |
+| `lifecycle`  | `standard` (default) retains existing operations; `fresh` permits commands and stop, requires `NoIdleTimeout`, and refuses suspend, resume, snapshots and restore. |
+| `branchable` | `true` by default; `false` disables checkpoint creation and restore. Fresh lifecycle defaults to `false` and rejects explicit `true`.                              |
 
 Go callers can import `smolcloud` and use `smolcloud.ConfigKeyBootstrap`, `smolcloud.ConfigKeyLifecycle` and `smolcloud.ConfigKeyBranchable` as map keys.
 
@@ -228,17 +233,17 @@ Requires the `cs` CLI on the worker host. A Crafting sandbox is a workspace plus
 
 The provider is a thin adapter over [`crafting-demo/lightweight-go-client`](https://github.com/crafting-demo/lightweight-go-client), a standalone Go client for Crafting sandboxes that carries the CLI mechanics and has no dependencies outside the standard library.
 
-| Key | Description |
-|-----|-------------|
-| `template` | Crafting Template new sandboxes are created from (required) |
-| `workspace` | Workspace workload used for commands and snapshots (required) |
-| `dependencies` | Comma-separated dependency workloads whose data is part of a snapshot |
-| `folder` / `snapshot-folder` / `org` / `region` | Placement (optional) |
-| `use-pool` | Claim from a Sandbox Pool for faster starts (default: `auto`) |
-| `snapshot-base` | Also capture the workspace root filesystem (default: `false`) |
-| `home-includes` / `home-excludes` | Paths captured in a home snapshot (default: all of `$HOME`) |
-| `exec-uid` / `exec-dir` | Identity and working directory for commands (default: uid 1000) |
-| `token` / `config-dir` | Service-account token and isolated CLI state. Omit `token` when the worker runs inside a Crafting sandbox and already has credentials |
+| Key                                             | Description                                                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `template`                                      | Crafting Template new sandboxes are created from (required)                                                                           |
+| `workspace`                                     | Workspace workload used for commands and snapshots (required)                                                                         |
+| `dependencies`                                  | Comma-separated dependency workloads whose data is part of a snapshot                                                                 |
+| `folder` / `snapshot-folder` / `org` / `region` | Placement (optional)                                                                                                                  |
+| `use-pool`                                      | Claim from a Sandbox Pool for faster starts (default: `auto`)                                                                         |
+| `snapshot-base`                                 | Also capture the workspace root filesystem (default: `false`)                                                                         |
+| `home-includes` / `home-excludes`               | Paths captured in a home snapshot (default: all of `$HOME`)                                                                           |
+| `exec-uid` / `exec-dir`                         | Identity and working directory for commands (default: uid 1000)                                                                       |
+| `token` / `config-dir`                          | Service-account token and isolated CLI state. Omit `token` when the worker runs inside a Crafting sandbox and already has credentials |
 
 `sdk/compute/crafting/agent-sandbox.yaml` is a reference template with a workspace and a Postgres dependency. Create it once per organization:
 
@@ -255,36 +260,36 @@ export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","d
 
 **E2B** — `compute.ProviderTypeE2B`
 
-| Key | Description |
-|-----|-------------|
+| Key           | Description                                                  |
+| ------------- | ------------------------------------------------------------ |
 | `template-id` | E2B sandbox template ID. API key is read from `E2B_API_KEY`. |
-| `timeout` | Sandbox timeout in seconds (default: 3600) |
+| `timeout`     | Sandbox timeout in seconds (default: 3600)                   |
 
 **Daytona** — `compute.ProviderTypeDaytona`
 
-| Key | Description |
-|-----|-------------|
-| `image` | Docker image to run (required) |
+| Key      | Description                      |
+| -------- | -------------------------------- |
+| `image`  | Docker image to run (required)   |
 | `region` | Daytona target region (optional) |
 
 **AgentCore Runtime** — `compute.ProviderTypeAgentCoreRuntime`
 
-| Key | Description |
-|-----|-------------|
+| Key                 | Description                            |
+| ------------------- | -------------------------------------- |
 | `agent-runtime-arn` | ARN of the AgentCore Runtime to invoke |
 
 **Modal** — `compute.ProviderTypeModal`
 
-| Key | Description |
-|-----|-------------|
-| `image` | Container image reference (required) |
+| Key        | Description                                          |
+| ---------- | ---------------------------------------------------- |
+| `image`    | Container image reference (required)                 |
 | `app-name` | Modal app name (default: `temporal-sandbox-example`) |
 
 **GKE Agent Sandbox** — `compute.ProviderTypeGKEAgentSandbox`
 
-| Key | Description |
-|-----|-------------|
-| `template` | Agent Sandbox template name (required) |
+| Key         | Description                               |
+| ----------- | ----------------------------------------- |
+| `template`  | Agent Sandbox template name (required)    |
 | `namespace` | Kubernetes namespace (default: `default`) |
 
 Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`.
@@ -303,11 +308,11 @@ provider := sandbox.Provider{
 }
 ```
 
-| Key | Description |
-|-----|-------------|
-| `image` | Blaxel sandbox image (default: `blaxel/base-image:latest`), or the name of a sandbox template in the workspace, such as `my-template`. Other registry images, such as `ubuntu:26.04`, are not accepted. |
-| `memory-mb` | Memory in MB, which also sets the CPU count (default: Blaxel's) |
-| `region` | Region such as `us-pdx-1` (default: `BL_REGION` on the worker, else chosen by Blaxel) |
+| Key         | Description                                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image`     | Blaxel sandbox image (default: `blaxel/base-image:latest`), or the name of a sandbox template in the workspace, such as `my-template`. Other registry images, such as `ubuntu:26.04`, are not accepted. |
+| `memory-mb` | Memory in MB, which also sets the CPU count (default: Blaxel's)                                                                                                                                         |
+| `region`    | Region such as `us-pdx-1` (default: `BL_REGION` on the worker, else chosen by Blaxel)                                                                                                                   |
 
 Commands run from the activity worker through the sandbox's HTTP API, so the
 image does not need a Temporal worker. Each command takes about 0.5 s longer
@@ -365,12 +370,12 @@ provider := sandbox.Provider{
 }
 ```
 
-| Key | Description |
-|-----|-------------|
-| `image` | Sandbox image with its tag (default: `baseten/base-image:latest`), a built-in image or one built in your team |
-| `memory-mb` | Memory in MB, which also sets the CPU count (default: Baseten's, 4096) |
-| `region` | Region such as `us-pdx-1` (default: Baseten's) |
-| `team-id` | Team to create sandboxes in; required only for API keys in more than one team |
+| Key         | Description                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| `image`     | Sandbox image with its tag (default: `baseten/base-image:latest`), a built-in image or one built in your team |
+| `memory-mb` | Memory in MB, which also sets the CPU count (default: Baseten's, 4096)                                        |
+| `region`    | Region such as `us-pdx-1` (default: Baseten's)                                                                |
+| `team-id`   | Team to create sandboxes in; required only for API keys in more than one team                                 |
 
 Commands run from the activity worker through the sandbox's HTTP API, so the
 image does not need a Temporal worker. Each command takes about 0.5 s longer
@@ -408,15 +413,15 @@ to `compute.ProviderTypeBaseten` with `"image": "baseten/base-image:latest"`.
 
 Each example is a self-contained Go module with a `starter` binary and a `worker` binary.
 
-| Example | What it shows |
-|---------|---------------|
-| `examples/file-management` | Sequential shell commands (create, read, list files) |
-| `examples/auto-suspend` | Auto-suspend via `WithIdleTimeout`; file persists across suspend/resume |
-| `examples/explicit-suspend-resume` | Manual `Suspend` and `Resume` calls |
-| `examples/shared-sandbox` | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox` |
-| `examples/detached-sandbox` | `CleanupDisabled` sandbox handed off to an independent workflow |
-| `examples/snapshot-fork` | Snapshot an origin sandbox then branch two independent forks from it |
-| `examples/database-fork` | Snapshot a sandbox that holds database state as well as files, then apply a different migration in each fork |
+| Example                            | What it shows                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `examples/file-management`         | Sequential shell commands (create, read, list files)                                                         |
+| `examples/auto-suspend`            | Auto-suspend via `WithIdleTimeout`; file persists across suspend/resume                                      |
+| `examples/explicit-suspend-resume` | Manual `Suspend` and `Resume` calls                                                                          |
+| `examples/shared-sandbox`          | Two child workflows sharing one sandbox via `Ref`/`AttachToSandbox`                                          |
+| `examples/detached-sandbox`        | `CleanupDisabled` sandbox handed off to an independent workflow                                              |
+| `examples/snapshot-fork`           | Snapshot an origin sandbox then branch two independent forks from it                                         |
+| `examples/database-fork`           | Snapshot a sandbox that holds database state as well as files, then apply a different migration in each fork |
 
 ### Running an example
 
