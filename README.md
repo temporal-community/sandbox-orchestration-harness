@@ -11,8 +11,6 @@ The repository is a Go workspace with one library module and several example mod
 | `sdk/` | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
 | `examples/*/` | Runnable example workflows |
 
-The [external process example](examples/external-process/README.md) runs a bounded native process through the existing controller with a local fake SmolCloud API. It includes completion, cancellation, cleanup and refusal before allocation. It needs no cloud credentials or model access.
-
 ### How it works
 
 1. A workflow calls `sandbox.NewSandbox(ctx, computeProvider)`.
@@ -218,13 +216,13 @@ Fresh starts return `compute.ProviderStatus` with `instance_id`, `provider_type`
 
 Deploy `SandboxWorkflow` and receiving Activity Workers together after existing sandbox Workflows and their callers finish on compatible Workers. Enable new starts only after deployment; let them finish before rollback. Affected pending Start histories and nested `resource_binding` payloads require compatible Workers. Automatic migration and mixed receiver deployments are unsupported.
 
-New controllers claim initialization before policy mutation and awaited allocation. A competing init Update is rejected before another Start Activity can run, including when its configuration differs or is invalid. The admitted request retains its configuration, result and cleanup owner. The `exclusive-sandbox-initialization` version marker retains prior admission for unaffected histories; it does not extend the new execution compatibility boundary above. Finish pending old initialization before deployment and drain new controllers before rollback.
+`SandboxWorkflow` accepts one initialization at a time. It rejects a competing `sandbox-init` Update before policy changes or allocation.
 
 CPU and memory values must fit positive `int32` values for every configuration, as required by the API wire format. Disk values keep the existing positive host integer range. These checks do not qualify account quotas or live capacity.
 
 With standard lifecycle and branching enabled, restore keeps the existing checkpoint behavior. The restore API accepts name and network but no configuration labels or bootstrap override, so it cannot change the saved guest environment. Configurations with the digest label therefore refuse conflict adoption if the restored resource lacks matching labels. Fresh lifecycle always refuses restore before HTTP.
 
-Unaffected retained histories replay unchanged. Histories whose configuration used `lifecycle` or `branchable` before those settings existed remain excluded. The retained pending Start cancellation fixture records the old close behavior and is explicitly outside the new execution contract; its bytes remain historical evidence. Provider behavior is covered by fake HTTP tests. Local Temporal tests cover fresh execution, attachment isolation, owner cleanup and supported replay. The [local process example](examples/external-process/README.md) covers completion, cancellation and refusal with a fake API. Live SmolCloud execution remains unqualified.
+Unaffected retained histories replay unchanged. Histories whose configuration used `lifecycle` or `branchable` before those settings existed remain excluded. The retained pending Start cancellation fixture records the old close behavior and is explicitly outside the new execution contract; its bytes remain historical evidence. Provider behavior is covered by fake HTTP tests. Local Temporal tests cover fresh execution, attachment isolation, owner cleanup and supported replay. Live SmolCloud execution remains unqualified.
 
 **Crafting** — `compute.ProviderTypeCrafting`
 
@@ -489,6 +487,7 @@ examples/
   auto-suspend/
   database-fork/
   detached-sandbox/
+  external-process/       # Local integration-test demonstration and sample image
   explicit-suspend-resume/
   file-management/
   shared-sandbox/

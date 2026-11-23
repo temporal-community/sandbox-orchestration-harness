@@ -36,7 +36,7 @@ func TestSnapshotInitializationCancellationLifetime(t *testing.T) {
 		}).After(time.Hour)
 	env.RegisterDelayedCallback(env.CancelWorkflow, time.Second)
 	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) error {
-		s := &sandboxWorkflow{}
+		s := &sandboxWorkflow{initMutex: temporalworkflow.NewMutex(ctx)}
 		err := s.handleInit(ctx, SandboxInitInput{ComputeProvider: provider, Snapshot: &compute.ProviderSnapshot{SnapshotID: "snapshot"}})
 		if s.ordinaryStart || s.state.Status != nil || s.lifecycle != sandboxFailed {
 			return temporal.NewNonRetryableApplicationError("snapshot acquired ordinary Start lifetime", "InvalidTestResult", nil)
