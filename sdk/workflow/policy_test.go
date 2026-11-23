@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -169,11 +170,14 @@ func TestReceivingActivityPolicyBeforeConstruction(t *testing.T) {
 
 func TestControllerInitRetainsResolvedPolicy(t *testing.T) {
 	provider, calls := registerTestPolicy(t)
+	wantStatus := &compute.ProviderStatus{InstanceID: "instance", ProviderType: provider.Type, TaskQueueName: "synthetic-controller-queue", ConfigurationDigest: "synthetic-controller-configuration"}
+	returnedValue := *wantStatus
+	returnedStatus := &returnedValue
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.OnActivity(StartSandbox, mock.Anything, mock.MatchedBy(func(input StartSandboxInput) bool {
 		return input.Provider.Type == provider.Type && input.Provider.Config["lifecycle"] == "fresh" && input.TaskQueueName != ""
-	})).Return(StartSandboxOutput{Status: &compute.ProviderStatus{InstanceID: "instance"}}, nil).Once()
+	})).Return(StartSandboxOutput{Status: returnedStatus}, nil).Once()
 	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) (string, error) {
 		controller := &sandboxWorkflow{}
 		input := SandboxInitInput{ComputeProvider: provider, IdleTimeout: compute.NoIdleTimeout}
@@ -182,6 +186,9 @@ func TestControllerInitRetainsResolvedPolicy(t *testing.T) {
 		}
 		if controller.policy.Lifecycle != compute.LifecycleFresh || controller.state.ComputeProvider.Config["lifecycle"] != "fresh" || controller.state.IdleTimeout != compute.NoIdleTimeout || controller.lifecycle != sandboxRunning {
 			return "", errors.New("controller lost resolved policy or configuration")
+		}
+		if !reflect.DeepEqual(controller.state.Status, wantStatus) {
+			return "", errors.New("controller lost full typed resource status")
 		}
 		if err := controller.validateSnapshot(struct{}{}); err == nil || !strings.Contains(err.Error(), "does not support snapshot") {
 			return "", fmt.Errorf("retained snapshot policy = %v", err)

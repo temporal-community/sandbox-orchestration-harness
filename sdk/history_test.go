@@ -15,10 +15,62 @@ import (
 	enums "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+var retainedFreshPolicyRegistration sync.Map
+
+// TestRetainedFreshControllerReplay uses a history captured from d8a7d5b before
+// the fresh-start cancellation version gate is added. Worker identities and
+// sticky queue names use synthetic values; command payloads stay unchanged.
+func TestRetainedFreshControllerReplay(t *testing.T) {
+	for _, name := range []string{"baseline-fresh-controller.json", "baseline-fresh-canceled-controller.json"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var history historypb.History
+			if err := protojson.Unmarshal(data, &history); err != nil {
+				t.Fatal(err)
+			}
+			var provider compute.ProviderDetails
+			for _, event := range history.Events {
+				if attrs := event.GetActivityTaskScheduledEventAttributes(); attrs != nil && attrs.ActivityType.Name == "StartSandbox" {
+					var input controller.StartSandboxInput
+					if err := converter.GetDefaultDataConverter().FromPayloads(attrs.Input, &input); err != nil {
+						t.Fatal(err)
+					}
+					provider = input.Provider
+				}
+			}
+			if provider.Type == "" {
+				t.Fatal("retained history has no provider")
+			}
+			registration, _ := retainedFreshPolicyRegistration.LoadOrStore(provider.Type, &sync.Once{})
+			registration.(*sync.Once).Do(func() {
+				compute.RegisterPolicy(provider.Type, func(map[string]string) (compute.ExecutionPolicy, error) {
+					return compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}, nil
+				})
+			})
+			r := worker.NewWorkflowReplayer()
+			r.RegisterWorkflow(controller.SandboxWorkflow)
+			err = r.ReplayWorkflowHistory(nil, &history)
+			if name == "baseline-fresh-canceled-controller.json" {
+				// This retained history closes before its Start result. It is outside
+				// the new execution contract and must stay on compatible old Workers.
+				if err == nil {
+					t.Fatal("excluded pending cancellation history unexpectedly replays")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 type historyProvider struct{ compute.Provider }
 

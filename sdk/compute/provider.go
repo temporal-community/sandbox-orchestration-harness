@@ -3,12 +3,18 @@ package compute
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
 // NoIdleTimeout is a sentinel value for IdleTimeout meaning the sandbox will
 // never be automatically suspended due to inactivity.
 const NoIdleTimeout time.Duration = -1
+
+// ErrInvalidResourceBinding identifies invalid supplied resource context or
+// missing or conflicting status or selected configuration required by a fresh resource.
+var ErrInvalidResourceBinding = errors.New("invalid resource binding")
 
 // SandboxPostSnapshotState describes the sandbox's state after Snapshot returns.
 type SandboxPostSnapshotState int
@@ -35,8 +41,14 @@ type (
 		Config map[string]string `json:"config"`
 	}
 
+	// ProviderStatus identifies the resource and optional nonsecret reconciliation
+	// context. Retain the complete status for later calls. The provider interprets
+	// the queue and digest; these fields do not authenticate the caller.
 	ProviderStatus struct {
-		InstanceID string `json:"instance_id"`
+		InstanceID          string       `json:"instance_id"`
+		ProviderType        ProviderType `json:"provider_type,omitempty"`
+		TaskQueueName       string       `json:"task_queue_name,omitempty"`
+		ConfigurationDigest string       `json:"configuration_digest,omitempty"`
 	}
 	ProviderSnapshot struct {
 		SnapshotID string `json:"snapshot_id"`
@@ -52,8 +64,9 @@ type (
 	// from an init function) so the SDK can locate the provider by type name.
 	//
 	// Lifecycle contract:
-	//   - Start must return a ProviderStatus whose InstanceID is sufficient to
-	//     identify the sandbox in all subsequent calls (Stop, Suspend, ExecuteCommand, etc.).
+	//   - Start must return a ProviderStatus that identifies the sandbox in all
+	//     subsequent calls (Stop, Suspend, ExecuteCommand, etc.). Retain the complete
+	//     returned status, including any resource binding required by the provider.
 	//   - taskQueueName passed to Start and StartFromSnapshot is a stable input that
 	//     providers may use for identity or Temporal Worker routing when configured.
 	//     Provider configuration chooses the workload; Start need not start a Temporal Worker.
@@ -89,3 +102,17 @@ const (
 	ProviderTypeSmolCloud        ProviderType = "smol-cloud"
 	ProviderTypeGKEAgentSandbox  ProviderType = "gke-agent-sandbox"
 )
+
+// ValidateResourceBinding checks the resource context available before provider construction.
+// Provider-specific configuration and remote metadata checks remain with the provider.
+func ValidateResourceBinding(details ProviderDetails, status *ProviderStatus) error {
+	if status != nil && (status.ProviderType != "" || status.TaskQueueName != "" || status.ConfigurationDigest != "") {
+		if status.ProviderType == "" || status.TaskQueueName == "" || status.InstanceID == "" || status.ConfigurationDigest == "" {
+			return fmt.Errorf("compute: incomplete resource binding: %w", ErrInvalidResourceBinding)
+		}
+		if status.ProviderType != details.Type {
+			return fmt.Errorf("compute: resource binding conflicts with provider: %w", ErrInvalidResourceBinding)
+		}
+	}
+	return nil
+}

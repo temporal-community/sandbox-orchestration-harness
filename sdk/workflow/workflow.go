@@ -25,6 +25,7 @@ type sandboxWorkflow struct {
 	policy          compute.ExecutionPolicy
 	lifecycle       sandboxLifecycle
 	cancelRequested bool
+	ordinaryStart   bool   // selects Start result settling; snapshot initialization keeps its own lifetime
 	cancelIdleTimer func() // cancels the in-flight idle timer; nil if none
 
 	// suspendSnapshot is set when the sandbox was suspended via snapshot+stop
@@ -71,11 +72,21 @@ func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 	}
 
 	// Block until the init update has been processed.
-	if err := workflow.Await(ctx, func() bool { return s.lifecycle != sandboxPending }); err != nil {
-		return err
+	// This wait result is separate from the init Update's Activity result.
+	initWaitErr := workflow.Await(ctx, func() bool { return s.lifecycle != sandboxPending })
+	if initWaitErr != nil {
+		if !temporal.IsCanceledError(initWaitErr) || !s.ordinaryStart {
+			return initWaitErr
+		}
+		// Keep the owner alive until initialization records its terminal result.
+		drainCtx, cancelDrain := workflow.NewDisconnectedContext(ctx)
+		defer cancelDrain()
+		if err := workflow.Await(drainCtx, func() bool { return workflow.AllHandlersFinished(drainCtx) }); err != nil {
+			return err
+		}
 	}
 	if s.lifecycle == sandboxFailed {
-		return nil
+		return initWaitErr
 	}
 
 	logger.Info("sandbox initialised", "parentWorkflowID", s.state.WorkflowID, "parentRunID", s.state.RunID)
@@ -88,12 +99,16 @@ func (s *sandboxWorkflow) run(ctx workflow.Context) error {
 	// Block until a stop signal arrives, the workflow context is cancelled, or the
 	// sandbox was deleted as a side-effect of a Snapshot call (handleSnapshot sets
 	// cancelRequested = true for SandboxPostSnapshotDeleted).
-	// Discard a cancellation error: returning it from the workflow function marks the
-	// workflow as Failed rather than Cancelled in Temporal visibility.
+	// Continue through cleanup when the stop wait is canceled.
 	awaitErr := workflow.Await(ctx, func() bool { return s.cancelRequested })
 	var canceledErr *temporal.CanceledError
 	if errors.As(awaitErr, &canceledErr) {
 		awaitErr = nil
+	}
+	if initWaitErr != nil {
+		// Preserve pending-init cancellation after matching cleanup. The Update
+		// retains its own result, including a successful late allocation.
+		awaitErr = initWaitErr
 	}
 	s.cancelIdleTimerIfActive()
 
@@ -172,7 +187,7 @@ func (s *sandboxWorkflow) validateInit(inp SandboxInitInput) error {
 	if err != nil {
 		return wrapProviderConfig(err)
 	}
-	return wrapUnsupported(policy.ValidateInitial(compute.InitialOptions{IdleTimeout: inp.IdleTimeout, Snapshot: inp.Snapshot}))
+	return wrapProviderError(policy.ValidateInitial(compute.InitialOptions{IdleTimeout: inp.IdleTimeout, Snapshot: inp.Snapshot}))
 }
 
 func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput) error {
@@ -181,7 +196,7 @@ func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput)
 		return wrapProviderConfig(err)
 	}
 	if err := policy.ValidateInitial(compute.InitialOptions{IdleTimeout: inp.IdleTimeout, Snapshot: inp.Snapshot}); err != nil {
-		return wrapUnsupported(err)
+		return wrapProviderError(err)
 	}
 	s.policy = policy
 	if inp.Snapshot != nil {
@@ -203,10 +218,11 @@ func (s *sandboxWorkflow) handleInit(ctx workflow.Context, inp SandboxInitInput)
 		s.state.Status = out.Status
 	} else {
 		var out StartSandboxOutput
+		s.ordinaryStart = true
+		// Keep the terminal allocation result available to the cleanup owner.
+		startCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: startSandboxTimeout, WaitForCancellation: true})
 		if err := workflow.ExecuteActivity(
-			workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				StartToCloseTimeout: startSandboxTimeout,
-			}),
+			startCtx,
 			StartSandbox,
 			StartSandboxInput{
 				Provider:      inp.ComputeProvider,
@@ -232,7 +248,7 @@ func (s *sandboxWorkflow) validateExecuteCommand(inp SandboxExecuteCommandInput)
 		return temporal.NewApplicationError("sandbox is suspended", "Suspended")
 	}
 	if s.lifecycle == sandboxSuspended {
-		return wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume))
+		return wrapProviderError(s.policy.ValidateOperation(compute.OperationResume))
 	}
 	return nil
 }
@@ -294,11 +310,11 @@ func (s *sandboxWorkflow) validateSuspend(_ struct{}) error {
 	if s.lifecycle == sandboxSuspended {
 		return temporal.NewApplicationError("sandbox already suspended", "AlreadySuspended")
 	}
-	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationSuspend))
+	return wrapProviderError(s.policy.ValidateOperation(compute.OperationSuspend))
 }
 
 func (s *sandboxWorkflow) handleSuspend(ctx workflow.Context, _ struct{}) error {
-	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationSuspend)); err != nil {
+	if err := wrapProviderError(s.policy.ValidateOperation(compute.OperationSuspend)); err != nil {
 		return err
 	}
 	s.cancelIdleTimerIfActive()
@@ -371,11 +387,11 @@ func (s *sandboxWorkflow) validateSnapshot(_ struct{}) error {
 	if s.lifecycle == sandboxSuspended {
 		return temporal.NewApplicationError("sandbox is currently suspended", "InvalidSandboxState")
 	}
-	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationSnapshot))
+	return wrapProviderError(s.policy.ValidateOperation(compute.OperationSnapshot))
 }
 
 func (s *sandboxWorkflow) handleSnapshot(ctx workflow.Context, _ struct{}) (*compute.ProviderSnapshot, error) {
-	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationSnapshot)); err != nil {
+	if err := wrapProviderError(s.policy.ValidateOperation(compute.OperationSnapshot)); err != nil {
 		return nil, err
 	}
 	var out SnapshotSandboxOutput
@@ -421,11 +437,11 @@ func (s *sandboxWorkflow) validateDeleteSnapshot(snapshot *compute.ProviderSnaps
 	if s.state.ComputeProvider == nil {
 		return temporal.NewNonRetryableApplicationError("invalid sandbox state", "InvalidSandboxState", nil)
 	}
-	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationDeleteSnapshot))
+	return wrapProviderError(s.policy.ValidateOperation(compute.OperationDeleteSnapshot))
 }
 
 func (s *sandboxWorkflow) handleDeleteSnapshot(ctx workflow.Context, snapshot *compute.ProviderSnapshot) error {
-	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationDeleteSnapshot)); err != nil {
+	if err := wrapProviderError(s.policy.ValidateOperation(compute.OperationDeleteSnapshot)); err != nil {
 		return err
 	}
 	if s.suspendSnapshot != nil && snapshot != nil && s.suspendSnapshot.SnapshotID == snapshot.SnapshotID {
@@ -449,11 +465,11 @@ func (s *sandboxWorkflow) validateResume(_ struct{}) error {
 	if s.lifecycle != sandboxSuspended {
 		return temporal.NewApplicationError("sandbox not suspended", "NotSuspended")
 	}
-	return wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume))
+	return wrapProviderError(s.policy.ValidateOperation(compute.OperationResume))
 }
 
 func (s *sandboxWorkflow) handleResume(ctx workflow.Context, _ struct{}) error {
-	if err := wrapUnsupported(s.policy.ValidateOperation(compute.OperationResume)); err != nil {
+	if err := wrapProviderError(s.policy.ValidateOperation(compute.OperationResume)); err != nil {
 		return err
 	}
 	if s.suspendSnapshot != nil {

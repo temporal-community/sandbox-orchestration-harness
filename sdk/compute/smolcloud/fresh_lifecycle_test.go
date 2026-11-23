@@ -83,7 +83,7 @@ func TestFreshRequestAndLostCreateReply(t *testing.T) {
 		case "GET /v1/machines/unrelated":
 			fmt.Fprint(w, `{"state":"running","ready":true}`)
 		case "GET /v1/machines/original":
-			fmt.Fprintf(w, `{"state":%q,"ready":true}`, state)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "original", "name": record.Name, "labels": record.Labels, "network": record.Network, "state": state, "ready": true})
 		case "POST /v1/machines/original/start":
 			if r.URL.RawQuery != "" {
 				t.Errorf("fresh start enables branching: %s", r.URL)
@@ -106,10 +106,22 @@ func TestFreshRequestAndLostCreateReply(t *testing.T) {
 	if status, err := p.Start(context.Background(), "process-queue"); err == nil || status != nil {
 		t.Fatalf("lost reply must fail the attempt: %v %v", status, err)
 	}
+	var status *compute.ProviderStatus
+	var firstBinding compute.ProviderStatus
 	for i := 0; i < 2; i++ {
-		status, err := p.Start(context.Background(), "process-queue")
+		var err error
+		status, err = p.Start(context.Background(), "process-queue")
 		if err != nil || status == nil || status.InstanceID != "original" {
 			t.Fatalf("retry: %v %v", status, err)
+		}
+		wantBinding := compute.ProviderStatus{ProviderType: providerType, TaskQueueName: "process-queue", InstanceID: "original", ConfigurationDigest: p.(*provider).configurationLabel("process-queue")}
+		if *status != wantBinding {
+			t.Fatalf("retry resource binding: %+v, want %+v", status, wantBinding)
+		}
+		if i == 0 {
+			firstBinding = *status
+		} else if *status != firstBinding {
+			t.Fatal("retry changes resource binding")
 		}
 	}
 	if len(bodies) != 3 || !bytes.Equal(bodies[0], bodies[1]) || !bytes.Equal(bodies[0], bodies[2]) || starts != 1 || deletes != 0 {
@@ -130,7 +142,7 @@ func TestFreshRequestAndLostCreateReply(t *testing.T) {
 			t.Fatalf("bootstrap or credential in body: %q", forbidden)
 		}
 	}
-	if err := p.Stop(context.Background(), &compute.ProviderStatus{InstanceID: "original"}); err != nil || deletes != 1 {
+	if err := p.Stop(context.Background(), status); err != nil || deletes != 1 {
 		t.Fatalf("stop: %v deletes=%d", err, deletes)
 	}
 }
