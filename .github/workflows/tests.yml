@@ -72,6 +72,10 @@ jobs:
           from pathlib import Path
 
           required = {
+
+              "TestLocalExternalProcessLifecycle/completion",
+              "TestLocalExternalProcessLifecycle/cancellation",
+              "TestLocalExternalProcessLifecycle/unsupported-profile",
               "TestLocalProcessWithoutWorkerHistory/default-idle",
               "TestLocalProcessWithoutWorkerHistory/no-idle-timeout",
               "TestLocalProcessWithoutWorkerHistory/fresh-policy",
@@ -88,6 +92,11 @@ jobs:
               f"TestLocalPendingStartCancellationCleanup/fresh={fresh}/failed-start={failed}/canceled={canceled}"
               for fresh in ("false", "true")
               for failed, canceled in (("false", "true"), ("true", "true"), ("true", "false"))
+          )
+          required.update(
+              f"TestLocalConcurrentInitializationOwnership/{competing}/{shutdown}"
+              for competing in ("same", "changed", "invalid", "legacy")
+              for shutdown in ("stop", "cancel")
           )
           required.update(
               f"TestLocalAttachmentOwnershipHistory/fresh={fresh}/{shutdown}"

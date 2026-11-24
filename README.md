@@ -9,7 +9,7 @@ The repository is a Go workspace with one library module and several example mod
 | Module | Role |
 |--------|------|
 | `sdk/` | Public API — `NewSandbox`, `ExecuteCommand`, `Suspend`, `Resume`, `Snapshot`, `Stop`, `AttachToSandbox` |
-| `examples/*/` | Runnable example workflows |
+| `examples/*/` | Provider example modules |
 
 ### How it works
 
@@ -96,7 +96,7 @@ forkA, err := sandbox.NewSandbox(ctx, provider, sandbox.WithSnapshot(snap))
 forkB, err := sandbox.NewSandbox(ctx, provider, sandbox.WithSnapshot(snap))
 ```
 
-Each fork is fully independent — writes in one are invisible to the others and to the origin. The `SandboxPostSnapshotState` returned by the provider indicates whether the origin sandbox is still running, was suspended, or was deleted as a side-effect of snapshotting.
+Providers with snapshot restore support can create independent forks; check the provider limits below before use. The GKE provider does not restore checkpoint state. The `SandboxPostSnapshotState` returned by the provider indicates whether the origin sandbox is still running, was suspended, or was deleted as a side-effect of snapshotting.
 
 ### Sandbox references
 
@@ -115,7 +115,7 @@ result, err := sbx.ExecuteCommand(ctx, "ls")
 Call `sandbox.Register` once when setting up your worker. It registers `SandboxWorkflow` and all supporting activities:
 
 ```go
-err := sandbox.Register(w, temporalClient)
+sandbox.Register(w, temporalClient)
 ```
 
 ## Compute providers
@@ -144,15 +144,15 @@ Nine providers are included. All implement `compute.Provider` and self-register 
 | Daytona | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | AgentCore Runtime | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Modal | ✓ | ✓ | | | ✓ | ✓ | ✓ |
-| GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | ✓† |
+| GKE Agent Sandbox | ✓ | ✓ | | | ✓ | ✓† | No restore† |
 | Blaxel | ✓ | ✓ | ✓§ | ✓§ | ✓ | ✓¶ | ✓¶ |
 | Baseten Sandboxes | ✓ | ✓ | | | ✓ | | |
 
-Providers without native Suspend/Resume (Modal, GKE) automatically get suspend support through the snapshot fallback: when the SDK's idle-timeout or explicit `Suspend` call hits `ErrUnsupported`, the workflow snapshots the sandbox, stops it, and later restores it via `StartFromSnapshot`. No extra configuration is required — the fallback is transparent as long as the provider supports both `Snapshot` and `StartFromSnapshot`.
+Providers without native Suspend/Resume use the snapshot fallback when `Suspend` returns `ErrUnsupported`: the workflow snapshots the sandbox, stops it, and later calls `StartFromSnapshot`. Modal supports this route. The GKE implementation creates a new sandbox without restoring checkpoint state, so use `NoIdleTimeout` and do not use Suspend or snapshot restore when state must persist on GKE.
 
 ‡ Crafting snapshots are composite: the workspace home directory, the data of each dependency named in `dependencies`, and optionally the workspace root filesystem, recorded under one opaque snapshot ID. Work must live under `$HOME` to be captured unless `snapshot-base` is enabled. Forks are fully independent in both files and data.
 
-† GKE snapshots use the `podsnapshot.gke.io` CRD and require gVisor on the cluster. `Snapshot` checkpoints the pod and suspends it (scales to 0); `StartFromSnapshot` resumes the same pod (the controller restores from the checkpoint). True forking — multiple independent sandboxes from one snapshot — is not supported by the GKE PodSnapshot API.
+† GKE snapshots use the `podsnapshot.gke.io/v1` CRDs and require gVisor on the cluster. `Snapshot` creates a checkpoint trigger and returns the running state; it does not scale the sandbox to zero. `StartFromSnapshot` checks the snapshot ID format, then creates a new sandbox from the configured template and namespace. It does not apply the checkpoint or restore the original pod. State restoration and snapshot forks are not implemented by this provider.
 
 § Blaxel `Suspend` asks the sandbox for standby, which keeps memory and filesystem, and returns once Blaxel reports it on standby; a sandbox whose API predates `POST /standby` goes on standby by itself about 30 seconds after its last request. `Resume` is a no-op: the next request resumes the sandbox. Baseten has no standby API, so its `Suspend` and `Resume` return `ErrUnsupported`; it still puts a sandbox that stops receiving requests on standby by itself.
 
@@ -216,11 +216,13 @@ Fresh starts return `compute.ProviderStatus` with `instance_id`, `provider_type`
 
 Deploy `SandboxWorkflow` and receiving Activity Workers together after existing sandbox Workflows and their callers finish on compatible Workers. Enable new starts only after deployment; let them finish before rollback. Affected pending Start histories and nested `resource_binding` payloads require compatible Workers. Automatic migration and mixed receiver deployments are unsupported.
 
+`SandboxWorkflow` accepts one initialization at a time. It rejects a competing `sandbox-init` Update before policy changes or allocation.
+
 CPU and memory values must fit positive `int32` values for every configuration, as required by the API wire format. Disk values keep the existing positive host integer range. These checks do not qualify account quotas or live capacity.
 
 With standard lifecycle and branching enabled, restore keeps the existing checkpoint behavior. The restore API accepts name and network but no configuration labels or bootstrap override, so it cannot change the saved guest environment. Configurations with the digest label therefore refuse conflict adoption if the restored resource lacks matching labels. Fresh lifecycle always refuses restore before HTTP.
 
-Unaffected retained histories replay unchanged. Histories whose configuration used `lifecycle` or `branchable` before those settings existed remain excluded. The retained pending Start cancellation fixture records the old close behavior and is explicitly outside the new execution contract; its bytes remain historical evidence. Provider behavior is covered by fake HTTP tests. Local Temporal tests cover fresh execution, attachment isolation, owner cleanup and supported replay. Live SmolCloud execution and a complete process demo remain unqualified.
+Unaffected retained histories replay unchanged. Histories whose configuration used `lifecycle` or `branchable` before those settings existed remain excluded. The retained pending Start cancellation fixture records the old close behavior and is explicitly outside the new execution contract; its bytes remain historical evidence. Provider behavior is covered by fake HTTP tests. Local Temporal tests cover fresh execution, attachment isolation, owner cleanup and supported replay. Live SmolCloud execution remains unqualified.
 
 **Crafting** — `compute.ProviderTypeCrafting`
 
@@ -287,7 +289,7 @@ export SANDBOX_PROVIDER_CONFIG='{"template":"agent-sandbox","workspace":"dev","d
 | `template` | Agent Sandbox template name (required) |
 | `namespace` | Kubernetes namespace (default: `default`) |
 
-Snapshot operations require the `podsnapshot.gke.io/v1alpha1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`.
+Snapshot operations require the `podsnapshot.gke.io/v1` CRDs and a gVisor-enabled node pool. Kubernetes credentials are resolved from the in-cluster service account or `$KUBECONFIG`. See the snapshot restore limits above.
 
 **Blaxel** — `compute.ProviderTypeBlaxel`
 
@@ -333,9 +335,7 @@ Snapshots are workspace objects that outlive their source sandbox; the source
 keeps running while one is taken. A fork starts from the snapshot, so `image`,
 `memory-mb` and `region` apply only to `Start`.
 
-The examples other than `database-fork` set Modal with `ubuntu:26.04` in their
-`workflow.go`. To run one on Blaxel, set its provider to
-`compute.ProviderTypeBlaxel` with `"image": "blaxel/base-image:latest"`.
+The provider examples other than `database-fork` set Modal with `ubuntu:26.04` in their `workflow.go`. To run one on Blaxel, set its provider to `compute.ProviderTypeBlaxel` with `"image": "blaxel/base-image:latest"`.
 
 `sdk/compute/blaxel/postgres/` is a reference sandbox template that runs
 Postgres. Push it once per workspace:
@@ -393,9 +393,7 @@ line by line makes 60,000 short lines take about 100 s instead of under 1 s.
 Baseten Sandboxes have no snapshots or standby API, so the `snapshot-fork`,
 `database-fork` and `explicit-suspend-resume` examples do not run on them. In
 `auto-suspend`, the idle suspend fails and is logged, and the sandbox goes on
-standby by itself. The other examples set Modal with
-`ubuntu:26.04` in their `workflow.go`; to run one on Baseten, set its provider
-to `compute.ProviderTypeBaseten` with `"image": "baseten/base-image:latest"`.
+standby by itself. The other provider examples set Modal with `ubuntu:26.04` in their `workflow.go`; to run one on Baseten, set its provider to `compute.ProviderTypeBaseten` with `"image": "baseten/base-image:latest"`.
 
 ### Adding a provider
 
@@ -406,7 +404,7 @@ to `compute.ProviderTypeBaseten` with `"image": "baseten/base-image:latest"`.
 
 ## Examples
 
-Each example is a self-contained Go module with a `starter` binary and a `worker` binary.
+The provider examples are separate Go modules with `starter` and `worker` binaries.
 
 | Example | What it shows |
 |---------|---------------|
@@ -422,20 +420,28 @@ Each example is a self-contained Go module with a `starter` binary and a `worker
 
 **Prerequisites**
 
-- Go 1.26+
+- Go 1.27+ for the provider examples and repository workspace
 - A running Temporal server (`temporal server start-dev`)
 - Credentials for the compute provider used by the example
 
 **Build**
 
 ```sh
-make bins   # builds starter and worker binaries for all examples
+make bins   # builds starter and worker binaries except database-fork; see its module for a direct build
 ```
 
 Or build a single example:
 
 ```sh
-cd examples/file-management && go build -o starter ./cmd/starter && go build -o worker ./cmd/worker
+go -C examples/file-management build -o starter ./cmd/starter
+go -C examples/file-management build -o worker ./cmd/worker
+```
+
+For `database-fork`, build its binaries directly:
+
+```sh
+go -C examples/database-fork build -o starter ./cmd/starter
+go -C examples/database-fork build -o worker ./cmd/worker
 ```
 
 **Run**
@@ -468,6 +474,7 @@ sdk/
   compute/
     provider.go           # Provider interface, types, constants
     registry.go           # Register / Lookup
+    policy.go             # Execution policy and operation admission
     agentcore/provider.go # AWS AgentCore Runtime provider
     baseten/provider.go   # Baseten Sandboxes provider
     blaxel/               # Blaxel provider + reference Postgres sandbox template
@@ -475,6 +482,7 @@ sdk/
     daytona/provider.go   # Daytona provider
     e2b/provider.go       # E2B provider
     modal/provider.go     # Modal provider
+    smolcloud/            # Smol Machines Cloud provider and policy
     gkeagentsandbox/      # GKE Agent Sandbox provider
   workflow/
     interface.go          # Update/signal names, timeout constants, shared types

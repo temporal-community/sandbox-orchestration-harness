@@ -46,47 +46,88 @@ func requirePolicyRejection(t *testing.T, err error, message string) {
 }
 
 func TestControllerInitialPolicyAdmission(t *testing.T) {
-	provider, calls := registerTestPolicy(t)
-	for _, test := range []struct {
-		name     string
-		idle     time.Duration
-		snapshot *compute.ProviderSnapshot
-		message  string
-	}{
-		{name: "default idle", message: "requires NoIdleTimeout"},
-		{name: "positive idle", idle: time.Minute, message: "requires NoIdleTimeout"},
-		{name: "snapshot", idle: compute.NoIdleTimeout, snapshot: &compute.ProviderSnapshot{SnapshotID: "snapshot"}, message: "does not support restore"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			input := SandboxInitInput{ComputeProvider: provider, IdleTimeout: test.idle, Snapshot: test.snapshot}
-			controller := &sandboxWorkflow{}
-			requirePolicyRejection(t, controller.validateInit(input), test.message)
-			requirePolicyRejection(t, controller.handleInit(nil, input), test.message)
-			if controller.state.ComputeProvider != nil || controller.state.Status != nil || controller.lifecycle != sandboxPending || calls.Load() != 0 {
-				t.Fatal("rejected initialization changed state or constructed a provider")
-			}
-		})
-	}
-	controller := &sandboxWorkflow{}
-	if err := controller.validateInit(SandboxInitInput{ComputeProvider: provider, IdleTimeout: compute.NoIdleTimeout}); err != nil {
-		t.Fatalf("valid fresh initialization rejected: %v", err)
-	}
-	provider.Config["lifecycle"] = ""
-	if err := controller.validateInit(SandboxInitInput{ComputeProvider: provider, Snapshot: &compute.ProviderSnapshot{SnapshotID: "snapshot"}}); err != nil {
-		t.Fatalf("legacy initialization rejected: %v", err)
-	}
-	provider.Config["lifecycle"] = "invalid"
-	for _, err := range []error{
-		controller.validateInit(SandboxInitInput{ComputeProvider: provider}),
-		controller.handleInit(nil, SandboxInitInput{ComputeProvider: provider}),
-	} {
-		var applicationError *temporal.ApplicationError
-		if !errors.As(err, &applicationError) || applicationError.Type() != "ProviderConfigError" || !applicationError.NonRetryable() || !strings.Contains(err.Error(), "invalid test lifecycle") {
-			t.Fatalf("invalid configuration rejection = %v", err)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) error {
+		provider, calls := registerTestPolicy(t)
+		for _, test := range []struct {
+			name     string
+			idle     time.Duration
+			snapshot *compute.ProviderSnapshot
+			message  string
+		}{
+			{name: "default idle", message: "requires NoIdleTimeout"},
+			{name: "positive idle", idle: time.Minute, message: "requires NoIdleTimeout"},
+			{name: "snapshot", idle: compute.NoIdleTimeout, snapshot: &compute.ProviderSnapshot{SnapshotID: "snapshot"}, message: "does not support restore"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				input := SandboxInitInput{ComputeProvider: provider, IdleTimeout: test.idle, Snapshot: test.snapshot}
+				controller := &sandboxWorkflow{initMutex: temporalworkflow.NewMutex(ctx)}
+				requirePolicyRejection(t, controller.validateInit(input), test.message)
+				requirePolicyRejection(t, controller.handleInit(ctx, input), test.message)
+				if controller.state.ComputeProvider != nil || controller.state.Status != nil || controller.lifecycle != sandboxPending || calls.Load() != 0 {
+					t.Fatal("rejected initialization changed state or constructed a provider")
+				}
+			})
 		}
+		controller := &sandboxWorkflow{initMutex: temporalworkflow.NewMutex(ctx)}
+		if err := controller.validateInit(SandboxInitInput{ComputeProvider: provider, IdleTimeout: compute.NoIdleTimeout}); err != nil {
+			t.Fatalf("valid fresh initialization rejected: %v", err)
+		}
+		provider.Config["lifecycle"] = ""
+		if err := controller.validateInit(SandboxInitInput{ComputeProvider: provider, Snapshot: &compute.ProviderSnapshot{SnapshotID: "snapshot"}}); err != nil {
+			t.Fatalf("legacy initialization rejected: %v", err)
+		}
+		provider.Config["lifecycle"] = "invalid"
+		for _, err := range []error{
+			controller.validateInit(SandboxInitInput{ComputeProvider: provider}),
+			controller.handleInit(ctx, SandboxInitInput{ComputeProvider: provider}),
+		} {
+			var applicationError *temporal.ApplicationError
+			if !errors.As(err, &applicationError) || applicationError.Type() != "ProviderConfigError" || !applicationError.NonRetryable() || !strings.Contains(err.Error(), "invalid test lifecycle") {
+				t.Fatalf("invalid configuration rejection = %v", err)
+			}
+		}
+		if calls.Load() != 0 {
+			t.Fatal("initial admission constructed a provider")
+		}
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
 	}
-	if calls.Load() != 0 {
-		t.Fatal("initial admission constructed a provider")
+}
+
+func TestControllerInitializationClaimGuardsReceivingHandler(t *testing.T) {
+	provider, calls := registerTestPolicy(t)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) error {
+		s := &sandboxWorkflow{initMutex: temporalworkflow.NewMutex(ctx), policy: compute.ExecutionPolicy{Lifecycle: compute.LifecycleFresh}}
+		if !s.initMutex.TryLock(ctx) {
+			return errors.New("initial claim failed")
+		}
+		for _, lifecycle := range []string{"fresh", "", "invalid"} {
+			input := SandboxInitInput{ComputeProvider: compute.ProviderDetails{Type: provider.Type, Config: map[string]string{"lifecycle": lifecycle}}, IdleTimeout: compute.NoIdleTimeout}
+			for _, err := range []error{s.validateInit(input), s.handleInit(ctx, input)} {
+				var app *temporal.ApplicationError
+				if !errors.As(err, &app) || app.Type() != "AlreadyInitialized" || !strings.Contains(err.Error(), "initialization in progress") {
+					return fmt.Errorf("competing initialization not refused: %v", err)
+				}
+			}
+			if s.policy.Lifecycle != compute.LifecycleFresh || s.state.ComputeProvider != nil || s.state.Status != nil || calls.Load() != 0 {
+				return errors.New("competing initialization changed the admitted request")
+			}
+		}
+		s.initMutex.Unlock()
+		s.lifecycle = sandboxRunning
+		if err := s.handleInit(ctx, SandboxInitInput{ComputeProvider: provider}); err == nil || !strings.Contains(err.Error(), "already initialized") {
+			return fmt.Errorf("completed initialization was replaced: %v", err)
+		}
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -179,7 +220,7 @@ func TestControllerInitRetainsResolvedPolicy(t *testing.T) {
 		return input.Provider.Type == provider.Type && input.Provider.Config["lifecycle"] == "fresh" && input.TaskQueueName != ""
 	})).Return(StartSandboxOutput{Status: returnedStatus}, nil).Once()
 	env.ExecuteWorkflow(func(ctx temporalworkflow.Context) (string, error) {
-		controller := &sandboxWorkflow{}
+		controller := &sandboxWorkflow{initMutex: temporalworkflow.NewMutex(ctx)}
 		input := SandboxInitInput{ComputeProvider: provider, IdleTimeout: compute.NoIdleTimeout}
 		if err := controller.handleInit(ctx, input); err != nil {
 			return "", err
