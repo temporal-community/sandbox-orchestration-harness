@@ -26,9 +26,9 @@ func TestProviderErrorClassification(t *testing.T) {
 	}{
 		{name: "nil"},
 		{name: "unrelated", err: unrelated},
-		{name: "unsupported", err: fmt.Errorf("outer: %w", errors.ErrUnsupported), typ: errUnsupportedType},
+		{name: "unsupported", err: fmt.Errorf("outer: %w", errors.ErrUnsupported), typ: compute.ErrorTypeUnsupported},
 		{name: "binding", err: fmt.Errorf("outer: %w", compute.ErrInvalidResourceBinding), typ: "ProviderConfigError"},
-		{name: "unsupported-priority", err: fmt.Errorf("%w: %w", compute.ErrInvalidResourceBinding, errors.ErrUnsupported), typ: errUnsupportedType},
+		{name: "unsupported-priority", err: fmt.Errorf("%w: %w", compute.ErrInvalidResourceBinding, errors.ErrUnsupported), typ: compute.ErrorTypeUnsupported},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := wrapProviderError(test.err)
@@ -42,7 +42,29 @@ func TestProviderErrorClassification(t *testing.T) {
 			if !errors.As(got, &app) || app.Type() != test.typ || !app.NonRetryable() || app.Unwrap() != test.err {
 				t.Fatalf("classification lost type, retry flag or cause: %v", got)
 			}
+			if test.typ == compute.ErrorTypeUnsupported {
+				var details compute.UnsupportedError
+				if err := app.Details(&details); err != nil || details.Reason != test.err.Error() {
+					t.Fatalf("details = %+v, %v; want Reason %q", details, err, test.err.Error())
+				}
+			}
 		})
+	}
+}
+
+func TestProviderErrorUnsupportedDetails(t *testing.T) {
+	refusal := compute.UnsupportedOption(compute.OperationCommand, "working_directory", "no working directory")
+	got := wrapProviderError(fmt.Errorf("agentcore: %w", refusal))
+	var app *temporal.ApplicationError
+	if !errors.As(got, &app) || app.Type() != compute.ErrorTypeUnsupported || !app.NonRetryable() {
+		t.Fatalf("classification lost type or retry flag: %v", got)
+	}
+	var details compute.UnsupportedError
+	if err := app.Details(&details); err != nil {
+		t.Fatalf("details: %v", err)
+	}
+	if want := *refusal.(*compute.UnsupportedError); details != want {
+		t.Fatalf("details = %+v, want %+v", details, want)
 	}
 }
 

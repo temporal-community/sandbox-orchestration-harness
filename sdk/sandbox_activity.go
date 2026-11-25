@@ -212,6 +212,9 @@ func (a *sandboxActivities) SendSandboxDeleteSnapshot(ctx context.Context, input
 func wrapUpdateError(err error) error {
 	var appErr *temporal.ApplicationError
 	if errors.As(err, &appErr) {
+		if unsupported, ok := AsUnsupported(appErr); ok {
+			return temporal.NewNonRetryableApplicationError(appErr.Message(), appErr.Type(), appErr, *unsupported)
+		}
 		return temporal.NewNonRetryableApplicationError(appErr.Message(), appErr.Type(), appErr)
 	}
 	var notFound *serviceerror.NotFound

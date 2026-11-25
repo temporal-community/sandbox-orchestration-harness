@@ -11,7 +11,10 @@ import (
 
 func wrapProviderError(err error) error {
 	if errors.Is(err, errors.ErrUnsupported) {
-		return temporal.NewNonRetryableApplicationError(err.Error(), errUnsupportedType, err)
+		// A plain errors.ErrUnsupported travels as an UnsupportedError with only a Reason.
+		details := &compute.UnsupportedError{Reason: err.Error()}
+		errors.As(err, &details)
+		return temporal.NewNonRetryableApplicationError(err.Error(), compute.ErrorTypeUnsupported, err, *details)
 	}
 	if errors.Is(err, compute.ErrInvalidResourceBinding) {
 		return wrapProviderConfig(err)

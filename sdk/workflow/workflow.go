@@ -331,7 +331,7 @@ func (s *sandboxWorkflow) handleSuspend(ctx workflow.Context, _ struct{}) error 
 	).Get(ctx, nil)
 	if err != nil {
 		var appErr *temporal.ApplicationError
-		if errors.As(err, &appErr) && appErr.Type() == errUnsupportedType {
+		if errors.As(err, &appErr) && appErr.Type() == compute.ErrorTypeUnsupported {
 			return s.suspendViaSnapshot(ctx)
 		}
 		return err

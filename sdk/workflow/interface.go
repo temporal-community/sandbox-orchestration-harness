@@ -18,8 +18,6 @@ const (
 	SandboxStopSignal           = "sandbox-stop"
 	SandboxStateQuery           = "sandbox-state"
 
-	errUnsupportedType = "ErrUnsupported"
-
 	defaultOperationTimeout = 10 * time.Minute
 
 	startSandboxTimeout      = defaultOperationTimeout

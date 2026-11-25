@@ -371,8 +371,13 @@ func attachmentCallerWorkflow(ctx workflow.Context, input attachmentCallerInput)
 		for _, check := range checks {
 			err := check.call()
 			var app *temporal.ApplicationError
-			if !errors.As(err, &app) || (app.Type() != "ErrUnsupported" && !(check.name == "resume" && app.Type() == "NotSuspended")) {
+			if !errors.As(err, &app) || (app.Type() != compute.ErrorTypeUnsupported && !(check.name == "resume" && app.Type() == "NotSuspended")) {
 				return fmt.Errorf("%s did not return policy refusal: %w", check.name, err)
+			}
+			if app.Type() == compute.ErrorTypeUnsupported {
+				if details, ok := sandbox.AsUnsupported(err); !ok || !strings.Contains(details.Reason, "does not support") {
+					return fmt.Errorf("%s refusal lost its details: %+v from %w", check.name, details, err)
+				}
 			}
 		}
 	}

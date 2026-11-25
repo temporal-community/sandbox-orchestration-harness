@@ -40,8 +40,8 @@ func registerTestPolicy(t *testing.T) (compute.ProviderDetails, *atomic.Int32) {
 func requirePolicyRejection(t *testing.T, err error, message string) {
 	t.Helper()
 	var applicationError *temporal.ApplicationError
-	if !errors.As(err, &applicationError) || applicationError.Type() != errUnsupportedType || !applicationError.NonRetryable() || !strings.Contains(err.Error(), message) {
-		t.Fatalf("rejection = %v, want nonretryable %s containing %q", err, errUnsupportedType, message)
+	if !errors.As(err, &applicationError) || applicationError.Type() != compute.ErrorTypeUnsupported || !applicationError.NonRetryable() || !strings.Contains(err.Error(), message) {
+		t.Fatalf("rejection = %v, want nonretryable %s containing %q", err, compute.ErrorTypeUnsupported, message)
 	}
 }
 
