@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -234,7 +235,7 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 	return err
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	id, err := p.machineID(status)
 	if err != nil {
 		return nil, err

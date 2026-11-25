@@ -17,6 +17,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process"
 	"github.com/e2b-dev/infra/packages/shared/pkg/grpc/envd/process/processconnect"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -266,7 +267,7 @@ func (p *e2bProvider) DeleteSnapshot(ctx context.Context, snapshot *compute.Prov
 	return fmt.Errorf("e2b: DELETE %s returned %d - %s", path, resp.StatusCode, body)
 }
 
-func (p *e2bProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *e2bProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	sandboxID, clientID, err := parseInstanceID(status.InstanceID)
 	if err != nil {
 		return nil, err

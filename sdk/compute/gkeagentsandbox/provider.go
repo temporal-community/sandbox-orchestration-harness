@@ -17,6 +17,7 @@ import (
 
 	sandboxclient "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -223,7 +224,7 @@ func (p *gkeAgentSandboxProvider) DeleteSnapshot(ctx context.Context, snapshot *
 	return nil
 }
 
-func (p *gkeAgentSandboxProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *gkeAgentSandboxProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	sb, err := p.client.GetSandbox(ctx, status.InstanceID, p.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("gke-agent-sandbox: get sandbox: %w", err)

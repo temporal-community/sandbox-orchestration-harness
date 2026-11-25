@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	controller "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
 	historypb "go.temporal.io/api/history/v1"
@@ -231,12 +232,12 @@ func (p *attachmentProvider) record(operation string, status *compute.ProviderSt
 	p.boundary.Calls = append(p.boundary.Calls, attachmentCall{Operation: operation, Config: maps.Clone(p.config), Resource: resource, Status: status})
 }
 
-func (p *attachmentProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, command string) (*compute.CommandResult, error) {
+func (p *attachmentProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, command string, _ *command.Options) (*compute.CommandResult, error) {
 	p.record("command", status)
 	if err := p.validateStatus(status); err != nil {
 		return nil, err
 	}
-	return p.processProvider.ExecuteCommand(ctx, status, command)
+	return p.processProvider.ExecuteCommand(ctx, status, command, nil)
 }
 func (p *attachmentProvider) Stop(ctx context.Context, status *compute.ProviderStatus) error {
 	p.record("stop", status)

@@ -173,7 +173,7 @@ func TestExecuteCommandReportsExitCodeAsResult(t *testing.T) {
 		OnExec("build output", "warning: deprecated", 2)
 	p := testProvider(t, runner, nil)
 
-	res, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "make build")
+	res, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "make build", nil)
 	if err != nil {
 		t.Fatalf("a failing command should not be an error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestExecuteCommandResumesSuspendedSandboxFirst(t *testing.T) {
 		OnExec("done", "", 0)
 	p := testProvider(t, runner, nil)
 
-	if _, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "ls"); err != nil {
+	if _, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "ls", nil); err != nil {
 		t.Fatal(err)
 	}
 	if runner.ArgsFor("sandbox", "resume") == nil {
@@ -274,7 +274,7 @@ func TestConfigReachesTheCommandLine(t *testing.T) {
 		}
 	}
 
-	if _, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "ls"); err != nil {
+	if _, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "ls", nil); err != nil {
 		t.Fatal(err)
 	}
 	exec := runner.JoinedArgsFor("exec")

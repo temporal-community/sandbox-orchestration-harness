@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 )
 
 // NoIdleTimeout is a sentinel value for IdleTimeout meaning the sandbox will
@@ -87,7 +89,7 @@ type (
 		StartFromSnapshot(ctx context.Context, taskQueueName string, snapshot *ProviderSnapshot) (*ProviderStatus, error)
 		DeleteSnapshot(ctx context.Context, snapshot *ProviderSnapshot) error
 
-		ExecuteCommand(ctx context.Context, status *ProviderStatus, cmd string) (*CommandResult, error)
+		ExecuteCommand(ctx context.Context, status *ProviderStatus, cmd string, options *command.Options) (*CommandResult, error)
 	}
 )
 

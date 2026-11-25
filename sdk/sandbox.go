@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	wfIface "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -115,6 +116,14 @@ type ExecuteCommandOption func(*executeCommandConfig)
 
 type executeCommandConfig struct {
 	disableAutoResume bool // zero value = auto-resume enabled
+	options           *command.Options
+}
+
+func (c *executeCommandConfig) commandOptions() *command.Options {
+	if c.options == nil {
+		c.options = &command.Options{}
+	}
+	return c.options
 }
 
 // DisableAutoResume opts out of automatic sandbox resume before command execution.
@@ -122,6 +131,12 @@ type executeCommandConfig struct {
 // option to receive an error instead.
 func DisableAutoResume() ExecuteCommandOption {
 	return func(c *executeCommandConfig) { c.disableAutoResume = true }
+}
+
+// WithWorkingDirectory runs the command in dir inside the sandbox instead of the
+// provider's default working directory.
+func WithWorkingDirectory(dir string) ExecuteCommandOption {
+	return func(c *executeCommandConfig) { c.commandOptions().WorkingDirectory = dir }
 }
 
 // SandboxOption is a functional option for NewSandbox.
@@ -177,7 +192,7 @@ func (b *sandboxBase) ExecuteCommand(ctx workflow.Context, cmd string, opts ...E
 	err = workflow.ExecuteActivity(
 		workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 20 * time.Minute}),
 		b.activities.SendSandboxExecuteCommand,
-		SendSandboxExecuteCommandInput{UpdateID: updateID, SandboxID: b.sandboxID, Command: cmd, DisableAutoResume: cfg.disableAutoResume},
+		SendSandboxExecuteCommandInput{UpdateID: updateID, SandboxID: b.sandboxID, Command: cmd, DisableAutoResume: cfg.disableAutoResume, Options: cfg.options},
 	).Get(ctx, &result)
 	if err != nil {
 		return nil, err

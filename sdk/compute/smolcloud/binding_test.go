@@ -76,7 +76,7 @@ func TestBoundProviderCommandAndStopMetadata(t *testing.T) {
 					err = controller.StopSandbox(context.Background(), controller.StopSandboxInput{Provider: compute.ProviderDetails{Type: providerType, Config: freshConfig()}, Status: status})
 				} else if operation == "command" {
 					var result *compute.CommandResult
-					result, err = p.ExecuteCommand(context.Background(), status, "true")
+					result, err = p.ExecuteCommand(context.Background(), status, "true", nil)
 					if err == nil && result.Stdout != "ok" {
 						t.Fatalf("command output: %+v", result)
 					}
@@ -155,7 +155,7 @@ func TestBoundProviderRefusesLostOrConflictingContextBeforeHTTP(t *testing.T) {
 				status.ConfigurationDigest = selected.(*provider).configurationLabel("queue")
 			}
 			for _, invoke := range []func() error{
-				func() error { _, err := selected.ExecuteCommand(context.Background(), status, "true"); return err },
+				func() error { _, err := selected.ExecuteCommand(context.Background(), status, "true", nil); return err },
 				func() error { return selected.Stop(context.Background(), status) },
 			} {
 				err := invoke()
@@ -351,7 +351,10 @@ func TestBoundProviderTransportError(t *testing.T) {
 	})
 	for _, invoke := range []func() error{
 		func() error { return p.Stop(context.Background(), boundStatus(p)) },
-		func() error { _, err := p.ExecuteCommand(context.Background(), boundStatus(p), "true"); return err },
+		func() error {
+			_, err := p.ExecuteCommand(context.Background(), boundStatus(p), "true", nil)
+			return err
+		},
 	} {
 		err := invoke()
 		if !errors.Is(err, transportErr) || errors.Is(err, compute.ErrInvalidResourceBinding) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	controller "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
 	enums "go.temporal.io/api/enums/v1"
@@ -78,7 +79,7 @@ func (*historyProvider) Start(_ context.Context, queue string) (*compute.Provide
 	return &compute.ProviderStatus{InstanceID: queue}, nil
 }
 func (*historyProvider) Stop(context.Context, *compute.ProviderStatus) error { return nil }
-func (*historyProvider) ExecuteCommand(_ context.Context, _ *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (*historyProvider) ExecuteCommand(_ context.Context, _ *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	return &compute.CommandResult{Stdout: cmd}, nil
 }
 

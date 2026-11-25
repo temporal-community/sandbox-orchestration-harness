@@ -155,7 +155,7 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 		created["metadata"].(map[string]any)["labels"].(map[string]any)["temporal-harness"] != "blaxel" {
 		t.Fatalf("create request: %v", created)
 	}
-	result, err := instance.ExecuteCommand(ctx, status, "exit 7")
+	result, err := instance.ExecuteCommand(ctx, status, "exit 7", nil)
 	if err != nil || result.ExitCode != 7 || result.Stdout != "hello" || result.Stderr != "oops" {
 		t.Fatalf("exec: %v %v", result, err)
 	}
@@ -331,7 +331,7 @@ func TestCommandRunsOncePerActivity(t *testing.T) {
 	}
 	result, err := runActivity(t, func(ctx context.Context) (*compute.CommandResult, error) {
 		attempts++
-		return p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-1"}, "make deploy")
+		return p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-1"}, "make deploy", nil)
 	})
 	if err != nil || result.ExitCode != 3 || result.Stdout != "deployed" || attempts != 2 || posts != 1 || !strings.HasPrefix(name, "temporal-") {
 		t.Fatalf("command must run once across attempts: attempts=%d posts=%d name=%q result=%+v err=%v", attempts, posts, name, result, err)
@@ -402,16 +402,16 @@ func TestNothingRepeatedOrPartial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	status := &compute.ProviderStatus{InstanceID: "temporal-1"}
-	if _, err := p.ExecuteCommand(ctx, status, "make deploy"); err == nil || len(commands) != 1 {
+	if _, err := p.ExecuteCommand(ctx, status, "make deploy", nil); err == nil || len(commands) != 1 {
 		t.Fatalf("command must be sent once and left to Temporal's retry: commands=%v err=%v", commands, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "truncated") || polls != 2 {
+	if result, err := p.ExecuteCommand(ctx, status, "yes | head -c 10000000", nil); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "truncated") || polls != 2 {
 		t.Fatalf("truncated output returned: polls=%d result=%+v err=%v", polls, result, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "cat page.html"); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "limit") {
+	if result, err := p.ExecuteCommand(ctx, status, "cat page.html", nil); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("output over Temporal's payload limit returned: result=%t err=%v", result != nil, err)
 	}
-	if result, err := p.ExecuteCommand(ctx, status, "sleep 900"); !isFinal(err, "CommandKilled") {
+	if result, err := p.ExecuteCommand(ctx, status, "sleep 900", nil); !isFinal(err, "CommandKilled") {
 		t.Fatalf("killed command returned or left to retry: result=%+v err=%v", result, err)
 	}
 	if _, _, err := p.Snapshot(ctx, status); err == nil || snapshots != 1 {
@@ -448,7 +448,7 @@ func TestRejectedCredentialsAreFinal(t *testing.T) {
 	if _, err := p.Start(ctx, "queue-1"); !isFinal(err, "Unauthorized") {
 		t.Fatalf("start with a rejected workspace left to retry: %v", err)
 	}
-	if _, err := p.ExecuteCommand(ctx, status, "true"); !isFinal(err, "Unauthorized") {
+	if _, err := p.ExecuteCommand(ctx, status, "true", nil); !isFinal(err, "Unauthorized") {
 		t.Fatalf("command with a rejected key left to retry: %v", err)
 	}
 	// Only the snapshot feature's own 403 means snapshots are unsupported.
@@ -479,7 +479,7 @@ func TestRejectedRequestsAreFinal(t *testing.T) {
 	if _, err := p.Start(ctx, "queue-1"); !isFinal(err, "InvalidRequest") {
 		t.Fatalf("start with an unsupported image left to retry: %v", err)
 	}
-	if _, err := p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-1"}, "true"); !isFinal(err, "NotFound") {
+	if _, err := p.ExecuteCommand(ctx, &compute.ProviderStatus{InstanceID: "temporal-1"}, "true", nil); !isFinal(err, "NotFound") {
 		t.Fatalf("command in a missing sandbox left to retry: %v", err)
 	}
 }

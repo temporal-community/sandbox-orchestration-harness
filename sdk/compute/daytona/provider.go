@@ -8,6 +8,7 @@ import (
 	daytonasdk "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
 	daytonaerrors "github.com/daytonaio/daytona/libs/sdk-go/pkg/errors"
 	daytonatypes "github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -108,7 +109,7 @@ func (p *daytonaProvider) DeleteSnapshot(_ context.Context, _ *compute.ProviderS
 	return fmt.Errorf("daytona: DeleteSnapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *daytonaProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *daytonaProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	sandbox, err := p.client.Get(ctx, status.InstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("daytona: get sandbox: %w", err)

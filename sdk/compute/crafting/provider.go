@@ -32,6 +32,7 @@ import (
 
 	crafting "github.com/crafting-demo/lightweight-go-client"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -187,7 +188,7 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 // CommandResult with a non-zero ExitCode so the agent workflow can react to it.
 // An error is reserved for the case where the command could not be run at all,
 // which Temporal's activity retries then handle.
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	ref, err := p.target(status)
 	if err != nil {
 		return nil, err

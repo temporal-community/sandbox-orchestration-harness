@@ -77,7 +77,7 @@ func TestCloudLifecycleAndSnapshot(t *testing.T) {
 	if created["network"].(map[string]any)["mode"] != "blocked" || created["forkable"] != nil || created["branchable"] != true || created["resources"].(map[string]any)["cpus"] != float64(1) {
 		t.Fatal("unexpected sandbox defaults or missing checkpoint support")
 	}
-	result, err := p.ExecuteCommand(ctx, status, "exit 7")
+	result, err := p.ExecuteCommand(ctx, status, "exit 7", nil)
 	if err != nil || result.ExitCode != 7 || result.Stdout != "hello" || result.Stderr != "oops" {
 		t.Fatalf("exec: %v %v", result, err)
 	}

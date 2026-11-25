@@ -41,7 +41,7 @@ func TestBasetenLive(t *testing.T) {
 		}
 	})
 	start = time.Now()
-	result, err := p.ExecuteCommand(ctx, status, "echo temporal-live > /tmp/proof && cat /tmp/proof && echo $TEMPORAL_TASK_QUEUE")
+	result, err := p.ExecuteCommand(ctx, status, "echo temporal-live > /tmp/proof && cat /tmp/proof && echo $TEMPORAL_TASK_QUEUE", nil)
 	if err != nil || result.ExitCode != 0 || result.Stdout != "temporal-live\n"+queue+"\n" {
 		t.Fatalf("live exec: result=%+v err=%v", result, err)
 	}
@@ -59,7 +59,7 @@ func TestBasetenLive(t *testing.T) {
 	case <-time.After(45 * time.Second):
 	}
 	start = time.Now()
-	result, err = p.ExecuteCommand(ctx, status, "cat /tmp/proof; echo out-of-band >&2; exit 3")
+	result, err = p.ExecuteCommand(ctx, status, "cat /tmp/proof; echo out-of-band >&2; exit 3", nil)
 	if err != nil || result.ExitCode != 3 || result.Stdout != "temporal-live\n" || result.Stderr != "out-of-band\n" {
 		t.Fatalf("resumed sandbox: result=%+v err=%v", result, err)
 	}
@@ -72,14 +72,14 @@ func TestBasetenLive(t *testing.T) {
 			ctx, cancel = context.WithCancel(ctx)
 			time.AfterFunc(3*time.Second, cancel)
 		}
-		return p.ExecuteCommand(ctx, status, "echo run >> /tmp/runs; sleep 8; wc -l < /tmp/runs")
+		return p.ExecuteCommand(ctx, status, "echo run >> /tmp/runs; sleep 8; wc -l < /tmp/runs", nil)
 	})
 	if err != nil || strings.TrimSpace(result.Stdout) != "1" {
 		t.Fatalf("retried command: result=%+v err=%v", result, err)
 	}
 	// Output with many lines comes back whole and fast.
 	start = time.Now()
-	result, err = p.ExecuteCommand(ctx, status, "seq 1 60000")
+	result, err = p.ExecuteCommand(ctx, status, "seq 1 60000", nil)
 	if err != nil {
 		t.Fatalf("many lines: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestBasetenLive(t *testing.T) {
 		"head -c 2500000 /dev/zero | tr '\\0' x": "limit",
 		"head -c 5000000 /dev/zero | tr '\\0' x": "truncated",
 	} {
-		if result, err := p.ExecuteCommand(ctx, status, command); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), reason) {
+		if result, err := p.ExecuteCommand(ctx, status, command, nil); !isFinal(err, "OutputTooLarge") || !strings.Contains(err.Error(), reason) {
 			t.Fatalf("oversized output: %s: err=%v", command, err)
 		} else if result != nil {
 			t.Fatalf("oversized output returned %d bytes", len(result.Stdout))

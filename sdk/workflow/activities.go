@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/temporal"
 )
@@ -109,6 +110,7 @@ type ExecuteCommandInput struct {
 	Provider compute.ProviderDetails `json:"provider"`
 	Status   *compute.ProviderStatus `json:"status"`
 	Command  string                  `json:"command"`
+	Options  *command.Options        `json:"options,omitempty"`
 }
 
 type ExecuteCommandOutput struct {
@@ -120,7 +122,7 @@ func ExecuteCommand(ctx context.Context, input ExecuteCommandInput) (ExecuteComm
 	if err != nil {
 		return ExecuteCommandOutput{}, err
 	}
-	result, err := provider.ExecuteCommand(ctx, input.Status, input.Command)
+	result, err := provider.ExecuteCommand(ctx, input.Status, input.Command, input.Options)
 	if err != nil {
 		return ExecuteCommandOutput{}, wrapProviderError(err)
 	}

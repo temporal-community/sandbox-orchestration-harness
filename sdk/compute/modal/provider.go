@@ -8,6 +8,7 @@ import (
 	"time"
 
 	modal "github.com/modal-labs/modal-client/go"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -120,12 +121,21 @@ func (p *modalProvider) DeleteSnapshot(ctx context.Context, snapshot *compute.Pr
 	return nil
 }
 
-func (p *modalProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *modalProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
 	sb, err := p.client.Sandboxes.FromID(ctx, status.InstanceID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("modal: get sandbox: %w", err)
 	}
-	proc, err := sb.Exec(ctx, []string{"sh", "-c", cmd}, nil)
+
+	var params *modal.SandboxExecParams
+
+	if options != nil {
+		params = &modal.SandboxExecParams{
+			Workdir: options.WorkingDirectory,
+		}
+	}
+
+	proc, err := sb.Exec(ctx, []string{"sh", "-c", cmd}, params)
 	if err != nil {
 		return nil, fmt.Errorf("modal: exec command: %w", err)
 	}

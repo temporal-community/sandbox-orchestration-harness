@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/agentcore"
 	_ "github.com/temporal-community/sandbox-orchestration-harness/sdk/compute/baseten"
@@ -61,6 +62,7 @@ type SendSandboxExecuteCommandInput struct {
 	UpdateID          string
 	Command           string
 	DisableAutoResume bool
+	Options           *command.Options
 }
 
 func (a *sandboxActivities) SendSandboxExecuteCommand(ctx context.Context, input SendSandboxExecuteCommandInput) (compute.CommandResult, error) {
@@ -68,7 +70,7 @@ func (a *sandboxActivities) SendSandboxExecuteCommand(ctx context.Context, input
 		WorkflowID:   input.SandboxID,
 		UpdateID:     input.UpdateID,
 		UpdateName:   wfIface.SandboxExecuteCommandUpdate,
-		Args:         []any{wfIface.SandboxExecuteCommandInput{Command: input.Command, DisableAutoResume: input.DisableAutoResume}},
+		Args:         []any{wfIface.SandboxExecuteCommandInput{Command: input.Command, DisableAutoResume: input.DisableAutoResume, Options: input.Options}},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {

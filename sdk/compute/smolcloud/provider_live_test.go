@@ -44,7 +44,7 @@ func TestCloudLiveCheckpointResume(t *testing.T) {
 		t.Fatalf("create and start live VM: %v", err)
 	}
 	t.Cleanup(func() { cleanupMachine(original) })
-	result, err := p.ExecuteCommand(ctx, original, "echo temporal-live > /workspace/proof && cat /workspace/proof")
+	result, err := p.ExecuteCommand(ctx, original, "echo temporal-live > /workspace/proof && cat /workspace/proof", nil)
 	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, "temporal-live") {
 		t.Fatalf("live exec: result=%+v err=%v", result, err)
 	}
@@ -64,7 +64,7 @@ func TestCloudLiveCheckpointResume(t *testing.T) {
 		t.Fatalf("live restore: %v", err)
 	}
 	t.Cleanup(func() { cleanupMachine(fork) })
-	result, err = p.ExecuteCommand(ctx, fork, "cat /workspace/proof")
+	result, err = p.ExecuteCommand(ctx, fork, "cat /workspace/proof", nil)
 	if err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != "temporal-live" {
 		t.Fatalf("restored workspace: result=%+v err=%v", result, err)
 	}
@@ -82,7 +82,7 @@ func TestCloudLiveCheckpointResume(t *testing.T) {
 	if err := p.Resume(ctx, original); err != nil {
 		t.Fatalf("live resume: %v", err)
 	}
-	result, err = p.ExecuteCommand(ctx, original, "cat /workspace/proof")
+	result, err = p.ExecuteCommand(ctx, original, "cat /workspace/proof", nil)
 	if err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != "temporal-live" {
 		t.Fatalf("resumed workspace: result=%+v err=%v", result, err)
 	}

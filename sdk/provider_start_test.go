@@ -19,6 +19,7 @@ import (
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/mock"
 	sandbox "github.com/temporal-community/sandbox-orchestration-harness/sdk"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	controller "github.com/temporal-community/sandbox-orchestration-harness/sdk/workflow"
 	"go.temporal.io/sdk/activity"
@@ -95,7 +96,7 @@ func (p *processProvider) Stop(_ context.Context, status *compute.ProviderStatus
 	p.boundary.Stops = append(p.boundary.Stops, status.InstanceID)
 	return nil
 }
-func (p *processProvider) ExecuteCommand(_ context.Context, status *compute.ProviderStatus, command string) (*compute.CommandResult, error) {
+func (p *processProvider) ExecuteCommand(_ context.Context, status *compute.ProviderStatus, command string, _ *command.Options) (*compute.CommandResult, error) {
 	p.boundary.mu.Lock()
 	defer p.boundary.mu.Unlock()
 	for _, resource := range p.boundary.Resources {

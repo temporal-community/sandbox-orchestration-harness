@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/temporal"
 )
@@ -96,7 +97,7 @@ func (p *bindingRecordingProvider) Snapshot(context.Context, *compute.ProviderSt
 	p.calls.Add(1)
 	return compute.SandboxPostSnapshotRunning, nil, nil
 }
-func (p *bindingRecordingProvider) ExecuteCommand(context.Context, *compute.ProviderStatus, string) (*compute.CommandResult, error) {
+func (p *bindingRecordingProvider) ExecuteCommand(context.Context, *compute.ProviderStatus, string, *command.Options) (*compute.CommandResult, error) {
 	p.calls.Add(1)
 	return &compute.CommandResult{}, nil
 }

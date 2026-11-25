@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/basetenlabs/baseten-go/sandbox"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -143,7 +144,7 @@ func (p *provider) DeleteSnapshot(context.Context, *compute.ProviderSnapshot) er
 	return fmt.Errorf("baseten: delete snapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (_ *compute.CommandResult, err error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (_ *compute.CommandResult, err error) {
 	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {

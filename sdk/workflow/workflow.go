@@ -274,6 +274,7 @@ func (s *sandboxWorkflow) handleExecuteCommand(ctx workflow.Context, inp Sandbox
 			Provider: *s.state.ComputeProvider,
 			Status:   s.state.Status,
 			Command:  inp.Command,
+			Options:  inp.Options,
 		},
 	).Get(ctx, &out)
 	if err != nil {

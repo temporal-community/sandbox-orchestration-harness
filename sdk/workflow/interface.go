@@ -3,6 +3,7 @@ package workflow
 import (
 	"time"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -33,8 +34,9 @@ const (
 )
 
 type SandboxExecuteCommandInput struct {
-	Command           string `json:"command"`
-	DisableAutoResume bool   `json:"disable_auto_resume"`
+	Command           string           `json:"command"`
+	DisableAutoResume bool             `json:"disable_auto_resume"`
+	Options           *command.Options `json:"options,omitempty"`
 }
 
 // SandboxLocalState is the mutable state carried by SandboxWorkflow throughout

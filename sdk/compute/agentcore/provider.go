@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockagentcore"
 	agentcoretypes "github.com/aws/aws-sdk-go-v2/service/bedrockagentcore/types"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -131,7 +132,7 @@ func (p *agentCoreRuntimeProvider) DeleteSnapshot(_ context.Context, _ *compute.
 	return fmt.Errorf("agentcore-runtime: DeleteSnapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *agentCoreRuntimeProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (*compute.CommandResult, error) {
+func (p *agentCoreRuntimeProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
 	timeout := int32(300)
 	out, err := p.client.InvokeAgentRuntimeCommand(ctx, &bedrockagentcore.InvokeAgentRuntimeCommandInput{
 		AgentRuntimeArn:  aws.String(p.agentRuntimeARN),

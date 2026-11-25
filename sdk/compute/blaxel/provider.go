@@ -19,6 +19,7 @@ import (
 
 	blaxelsdk "github.com/blaxel-ai/sdk-go"
 	"github.com/blaxel-ai/sdk-go/option"
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -239,7 +240,7 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 	return nil
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string) (_ *compute.CommandResult, err error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (_ *compute.CommandResult, err error) {
 	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {
