@@ -8,6 +8,7 @@ import (
 	crafting "github.com/crafting-demo/lightweight-go-client"
 	"github.com/crafting-demo/lightweight-go-client/craftingtest"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 )
 
@@ -179,6 +180,21 @@ func TestExecuteCommandReportsExitCodeAsResult(t *testing.T) {
 	}
 	if res.ExitCode != 2 || res.Stdout != "build output" || res.Stderr != "warning: deprecated" {
 		t.Errorf("result = %+v, want the command's own output and exit code", res)
+	}
+}
+
+// The command's working directory overrides the configured one.
+func TestExecuteCommandWorkingDirectory(t *testing.T) {
+	runner := craftingtest.NewRunner().
+		On("sandbox show", craftingtest.RunningState(), nil).
+		OnExec("done", "", 0)
+	p := testProvider(t, runner, nil)
+
+	if _, err := p.ExecuteCommand(context.Background(), &compute.ProviderStatus{InstanceID: "lab/tsp-abc"}, "ls", &command.Options{WorkingDirectory: "/work"}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ArgsFor("exec", "-w /work") == nil {
+		t.Errorf("calls = %v, want exec with -w /work", runner.Calls())
 	}
 }
 

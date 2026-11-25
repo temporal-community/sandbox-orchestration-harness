@@ -267,7 +267,7 @@ func (p *e2bProvider) DeleteSnapshot(ctx context.Context, snapshot *compute.Prov
 	return fmt.Errorf("e2b: DELETE %s returned %d - %s", path, resp.StatusCode, body)
 }
 
-func (p *e2bProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *e2bProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
 	sandboxID, clientID, err := parseInstanceID(status.InstanceID)
 	if err != nil {
 		return nil, err
@@ -277,12 +277,14 @@ func (p *e2bProvider) ExecuteCommand(ctx context.Context, status *compute.Provid
 	baseURL := fmt.Sprintf("https://%d-%s-%s.%s", consts.DefaultEnvdServerPort, sandboxID, clientID, e2bDomain)
 	client := processconnect.NewProcessClient(p.httpClient, baseURL)
 
-	req := connect.NewRequest(&process.StartRequest{
-		Process: &process.ProcessConfig{
-			Cmd:  "bash",
-			Args: []string{"-c", cmd},
-		},
-	})
+	config := &process.ProcessConfig{
+		Cmd:  "bash",
+		Args: []string{"-c", cmd},
+	}
+	if options != nil && options.WorkingDirectory != "" {
+		config.Cwd = &options.WorkingDirectory
+	}
+	req := connect.NewRequest(&process.StartRequest{Process: config})
 	// envd authenticates via HTTP Basic auth with the sandbox user.
 	req.Header().Set("Authorization", envdBasicAuth("user"))
 

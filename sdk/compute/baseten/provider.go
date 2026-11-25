@@ -144,7 +144,7 @@ func (p *provider) DeleteSnapshot(context.Context, *compute.ProviderSnapshot) er
 	return fmt.Errorf("baseten: delete snapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (_ *compute.CommandResult, err error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (_ *compute.CommandResult, err error) {
 	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {
@@ -153,6 +153,9 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	// KeepAlive holds off standby while the command runs, and Timeout kills it
 	// when the activity's deadline passes.
 	request := sandbox.ProcessExecOptions{Command: cmd, KeepAlive: true}
+	if options != nil {
+		request.WorkingDir = options.WorkingDirectory
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline).Truncate(time.Second)
 		if remaining < time.Second {

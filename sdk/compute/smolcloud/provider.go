@@ -235,7 +235,10 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 	return err
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
+	if options != nil && options.WorkingDirectory != "" {
+		return nil, compute.UnsupportedOption(compute.OperationCommand, "working_directory", "smol-cloud exec has no working directory")
+	}
 	id, err := p.machineID(status)
 	if err != nil {
 		return nil, err

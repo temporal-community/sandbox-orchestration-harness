@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -136,8 +137,11 @@ func TestLifecycle(t *testing.T) {
 	if err != nil || result.ExitCode != 7 || result.Stdout != "hello" || result.Stderr != "oops" {
 		t.Fatalf("exec: %v %v", result, err)
 	}
-	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 {
+	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 || execed["workingDir"] != nil {
 		t.Fatalf("exec request: %v", execed)
+	}
+	if _, err := p.ExecuteCommand(ctx, status, "exit 7", &command.Options{WorkingDirectory: "/work"}); err != nil || execed["workingDir"] != "/work" {
+		t.Fatalf("exec with working directory: %v %v", execed, err)
 	}
 	// No standby API: the workflow must not count the sandbox as suspended.
 	if err := p.Suspend(ctx, status); !errors.Is(err, errors.ErrUnsupported) {
@@ -150,7 +154,7 @@ func TestLifecycle(t *testing.T) {
 	if err := p.Stop(ctx, status); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 7 {
+	if len(calls) != 11 {
 		t.Fatalf("unexpected calls: %v", calls)
 	}
 	if _, _, err := p.Snapshot(ctx, status); !errors.Is(err, errors.ErrUnsupported) {

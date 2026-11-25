@@ -7,6 +7,7 @@ import (
 
 	daytonasdk "github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
 	daytonaerrors "github.com/daytonaio/daytona/libs/sdk-go/pkg/errors"
+	daytonaoptions "github.com/daytonaio/daytona/libs/sdk-go/pkg/options"
 	daytonatypes "github.com/daytonaio/daytona/libs/sdk-go/pkg/types"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
@@ -109,12 +110,16 @@ func (p *daytonaProvider) DeleteSnapshot(_ context.Context, _ *compute.ProviderS
 	return fmt.Errorf("daytona: DeleteSnapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *daytonaProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *daytonaProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
 	sandbox, err := p.client.Get(ctx, status.InstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("daytona: get sandbox: %w", err)
 	}
-	result, err := sandbox.Process.ExecuteCommand(ctx, cmd)
+	var opts []func(*daytonaoptions.ExecuteCommand)
+	if options != nil && options.WorkingDirectory != "" {
+		opts = append(opts, daytonaoptions.WithCwd(options.WorkingDirectory))
+	}
+	result, err := sandbox.Process.ExecuteCommand(ctx, cmd, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("daytona: execute command: %w", err)
 	}

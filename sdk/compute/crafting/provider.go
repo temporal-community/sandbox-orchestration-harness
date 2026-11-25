@@ -188,15 +188,20 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 // CommandResult with a non-zero ExitCode so the agent workflow can react to it.
 // An error is reserved for the case where the command could not be run at all,
 // which Temporal's activity retries then handle.
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
 	ref, err := p.target(status)
 	if err != nil {
 		return nil, err
 	}
+	// The command's working directory overrides the configured one.
+	dir := p.cfg.execDir
+	if options != nil && options.WorkingDirectory != "" {
+		dir = options.WorkingDirectory
+	}
 	res, err := p.client.Exec(ctx, ref, crafting.ExecOptions{
 		Workload: p.cfg.workspace,
 		UID:      p.cfg.execUID,
-		Dir:      p.cfg.execDir,
+		Dir:      dir,
 		Timeout:  p.cfg.commandTimeout,
 		// cs would resume a suspended sandbox on its own, but it reports that
 		// progress on stderr, which would land in the command's own Stderr.

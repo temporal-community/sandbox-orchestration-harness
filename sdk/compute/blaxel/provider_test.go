@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/temporal-community/sandbox-orchestration-harness/sdk/command"
 	"github.com/temporal-community/sandbox-orchestration-harness/sdk/compute"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
@@ -159,8 +160,11 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	if err != nil || result.ExitCode != 7 || result.Stdout != "hello" || result.Stderr != "oops" {
 		t.Fatalf("exec: %v %v", result, err)
 	}
-	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 {
+	if execed["command"] != "exit 7" || execed["keepAlive"] != true || execed["timeout"].(float64) < 50 || execed["workingDir"] != nil {
 		t.Fatalf("exec request: %v", execed)
+	}
+	if _, err := instance.ExecuteCommand(ctx, status, "exit 7", &command.Options{WorkingDirectory: "/work"}); err != nil || execed["workingDir"] != "/work" {
+		t.Fatalf("exec with working directory: %v %v", execed, err)
 	}
 	// Suspend asks for standby and returns once the sandbox is there.
 	if err := instance.Suspend(ctx, status); err != nil || standby != "STANDBY" {
@@ -187,7 +191,7 @@ func TestLifecycleAndSnapshot(t *testing.T) {
 	if err := instance.DeleteSnapshot(ctx, snap); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 14 {
+	if len(calls) != 18 {
 		t.Fatalf("unexpected calls: %v", calls)
 	}
 }

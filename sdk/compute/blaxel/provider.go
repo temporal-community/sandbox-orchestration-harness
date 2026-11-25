@@ -240,7 +240,7 @@ func (p *provider) DeleteSnapshot(ctx context.Context, snapshot *compute.Provide
 	return nil
 }
 
-func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (_ *compute.CommandResult, err error) {
+func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (_ *compute.CommandResult, err error) {
 	defer finalClientError(&err)
 	name, err := instanceName(status)
 	if err != nil {
@@ -250,6 +250,9 @@ func (p *provider) ExecuteCommand(ctx context.Context, status *compute.ProviderS
 	// sandbox kill the command when this attempt's deadline passes, so that a
 	// command never outlives the attempt that waits for it.
 	request := blaxelsdk.ProcessRequestParam{Command: cmd, KeepAlive: blaxelsdk.Bool(true)}
+	if options != nil && options.WorkingDirectory != "" {
+		request.WorkingDir = blaxelsdk.String(options.WorkingDirectory)
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := int64(time.Until(deadline).Seconds())
 		if remaining < 1 {

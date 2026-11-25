@@ -132,7 +132,10 @@ func (p *agentCoreRuntimeProvider) DeleteSnapshot(_ context.Context, _ *compute.
 	return fmt.Errorf("agentcore-runtime: DeleteSnapshot: %w", errors.ErrUnsupported)
 }
 
-func (p *agentCoreRuntimeProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *agentCoreRuntimeProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
+	if options != nil && options.WorkingDirectory != "" {
+		return nil, compute.UnsupportedOption(compute.OperationCommand, "working_directory", "agentcore-runtime commands have no working directory")
+	}
 	timeout := int32(300)
 	out, err := p.client.InvokeAgentRuntimeCommand(ctx, &bedrockagentcore.InvokeAgentRuntimeCommandInput{
 		AgentRuntimeArn:  aws.String(p.agentRuntimeARN),

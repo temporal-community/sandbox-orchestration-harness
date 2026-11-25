@@ -224,7 +224,10 @@ func (p *gkeAgentSandboxProvider) DeleteSnapshot(ctx context.Context, snapshot *
 	return nil
 }
 
-func (p *gkeAgentSandboxProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, _ *command.Options) (*compute.CommandResult, error) {
+func (p *gkeAgentSandboxProvider) ExecuteCommand(ctx context.Context, status *compute.ProviderStatus, cmd string, options *command.Options) (*compute.CommandResult, error) {
+	if options != nil && options.WorkingDirectory != "" {
+		return nil, compute.UnsupportedOption(compute.OperationCommand, "working_directory", "the agent-sandbox client in use has no working directory")
+	}
 	sb, err := p.client.GetSandbox(ctx, status.InstanceID, p.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("gke-agent-sandbox: get sandbox: %w", err)
